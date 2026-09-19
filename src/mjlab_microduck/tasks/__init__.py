@@ -75,6 +75,10 @@ from .microduck_roulade_env_cfg import (
     make_microduck_roulade_env_cfg,
     MicroduckRouladeRlCfg,
 )
+from .microduck_headstand_env_cfg import (
+    make_microduck_headstand_env_cfg,
+    MicroduckHeadstandRlCfg,
+)
 from .backlash import make_backlash_variant
 
 # Standard velocity task
@@ -230,6 +234,16 @@ register_mjlab_task(
     env_cfg=make_microduck_roulade_env_cfg(),
     play_env_cfg=make_microduck_roulade_env_cfg(play=True),
     rl_cfg=MicroduckRouladeRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Headstand — fold forward, head to the floor, swing up into a split-leg
+# headstand and hold it (Zach Garner, Sep 2026).
+register_mjlab_task(
+    task_id="Mjlab-Headstand-Flat-MicroDuck",
+    env_cfg=make_microduck_headstand_env_cfg(),
+    play_env_cfg=make_microduck_headstand_env_cfg(play=True),
+    rl_cfg=MicroduckHeadstandRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 
