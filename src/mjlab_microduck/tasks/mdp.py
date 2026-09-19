@@ -7389,3 +7389,388 @@ def roulade_lateral_velocity_penalty(
     """Body-frame lateral (y) linear velocity² — keeps the roll straight."""
     asset: Entity = env.scene[asset_cfg.name]
     return torch.nan_to_num(asset.data.root_link_lin_vel_b[:, 1].pow(2), nan=0.0)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Headstand — episodic trick: fold forward, head to the floor, swing up into a
+# split-leg headstand and hold it on the head alone (microduck_headstand_env_cfg).
+#
+# The pose and the entry come from the Sep 18 2026 physics checks in
+# scripts/headstand/ (settle_sweep.py, tripod_check.py, docs/headstand/):
+#   • The hold: left hip_pitch 1.2, right hip_pitch 0.8, neck_pitch 1.0,
+#     head_pitch 1.25, every other servo at 0. Rests on jaw_soft alone with the
+#     trunk ~20° off inverted-vertical, trunk_base z ≈ 0.117, feet ≈ 0.16 m up.
+#     Static basin is narrow (15 of 30 noisy drops land), so the policy has to
+#     balance actively — the split legs are the balance authority.
+#   • The entry (Zach's spec, former acrobat): head to the floor, legs in, one
+#     leg extends into the split, the last foot leaves with a tiny push. The
+#     legs (10 cm) cannot reach the floor once the trunk is within ~60° of
+#     inverted (hip at 15 cm), so the foot leaves at ~70° over and the neck
+#     swings the trunk the rest of the way. A supported motion end to end: the
+#     head never leaves the floor after it lands, and nothing goes ballistic.
+#
+# Orientation quantity used everywhere below: inverted_cos = -R[2,2] of the
+# trunk = +1 in a perfect headstand, 0 with the trunk horizontal, -1 standing.
+#
+# Adversarial review, Sep 18 2026 (before the first run): the hold rewards are
+# gated on CURRENT head contact + support + nothing else down (the latch alone
+# was a has-touched-once flag); the feet sensor covers the whole ankle bodies
+# (the servo housing 2–8 mm below the sole made a head + ankle-housing tripod
+# that passed every gate); the sharp term is flat-topped inside the measured
+# rest tilt and carries the pose factor (it was pulling past the validated
+# balance point and paying a tucked headstand 40% of the split's stack); the
+# swing is flatness-gated (a side-fold inverts just as well); a post-latch
+# not-inverted tax removes the free head+feet tripod park; progress charges
+# unsupported falls so airborne rotation cannot reset the potential.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# Sensor names the headstand functions read. NAMES ARE LOAD-BEARING: the cfg
+# must register sensors under exactly these names.
+_HEADSTAND_HEAD_SENSOR = "head_ground_contact"      # jaw_soft vs terrain (found + force)
+_HEADSTAND_FEET_SENSOR = "feet_ground_contact"      # ankle_left/right BODIES vs terrain
+_HEADSTAND_OTHER_SENSOR = "other_ground_contact"    # every other body vs terrain
+_HEADSTAND_SUPPORT_SENSOR = "robot_ground_contact"  # anything vs terrain
+
+# Partway spawn height table: trunk_base z that keeps the lowest collision
+# corner ≥ 1 cm above the floor, per trunk pitch from standing (forward fold,
+# degrees), as the MAX over the joint lerp u ∈ [0.4, 1], ±5° roll and ±0.05 rad
+# joint noise, plus 2 mm (measured Sep 18 2026, allcollisions model). The
+# first table was a u=0.5..1.0 mean and put 51% of partway spawns inside the
+# floor (review item 2).
+_HEADSTAND_SPAWN_PITCH_DEG = torch.tensor([90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0])
+_HEADSTAND_SPAWN_Z = torch.tensor([0.092, 0.115, 0.133, 0.150, 0.166, 0.172, 0.179, 0.179, 0.174, 0.165])
+
+# Static rest tilt of the hold pose: the sharp term is flat inside this.
+_HEADSTAND_REST_TILT_COS = math.cos(math.radians(20.0))
+
+
+def _inverted_cos(asset: Entity) -> torch.Tensor:
+    """-R[2,2] of the trunk: +1 perfect headstand, 0 horizontal, -1 standing."""
+    quat = asset.data.root_link_quat_w
+    up_z = 1.0 - 2.0 * (quat[:, 1] ** 2 + quat[:, 2] ** 2)
+    return -torch.nan_to_num(up_z, nan=-1.0)
+
+
+def _smoothstep(x: torch.Tensor, lo: float, hi: float) -> torch.Tensor:
+    t = torch.clamp((x - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _headstand_state(env: ManagerBasedRlEnv) -> None:
+    if not hasattr(env, "_headstand_head_latch"):
+        env._headstand_head_latch = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        env._headstand_prev_inverted = torch.full((env.num_envs,), -1.0, device=env.device)
+        env._headstand_last_update_step = -1
+
+
+def _update_headstand(env: ManagerBasedRlEnv, asset: Entity) -> None:
+    """Latch head-on-floor once per episode. Step-guarded like the roulade
+    accumulator so several reward terms can call it in one control step.
+
+    The latch needs the FLAT TOP of the head on the floor (roulade's
+    _head_top_down test; the hold pose measures -0.93 on that axis, a
+    face-plant on the beak reads +0.14..+0.47), so the beak does not count.
+    The latch is an "arrived legitimately" flag; the hold rewards check the
+    live contacts on top of it.
+    """
+    _headstand_state(env)
+    step = int(env.common_step_counter)
+    if step != env._headstand_last_update_step:
+        head = _sensor_any_contact(env, _HEADSTAND_HEAD_SENSOR)
+        if head is not None:
+            env._headstand_head_latch = env._headstand_head_latch | (head & _head_top_down(env, asset))
+        env._headstand_last_update_step = step
+
+
+def _headstand_on_head_alone(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """1 where the head is on the floor, both feet are off it, and no other
+    body touches it. The live gate every hold reward multiplies by."""
+    head = _sensor_any_contact(env, _HEADSTAND_HEAD_SENSOR)
+    feet = _sensor_any_contact(env, _HEADSTAND_FEET_SENSOR)
+    other = _sensor_any_contact(env, _HEADSTAND_OTHER_SENSOR)
+    gate = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    if head is not None:
+        gate = gate & head
+    if feet is not None:
+        gate = gate & ~feet
+    if other is not None:
+        gate = gate & ~other
+    return gate.float()
+
+
+def _headstand_pose_score(env: ManagerBasedRlEnv, asset: Entity, target_overrides: dict, pose_std: float) -> torch.Tensor:
+    target = _servo_default_joint_pos(env, asset).clone()
+    for idx, val in target_overrides.items():
+        target[:, idx] = val
+    err = ((_servo_joint_pos(env, asset) - target) ** 2).mean(dim=-1)
+    return torch.exp(-err / (pose_std * pose_std))
+
+
+def _headstand_legs_straight(env: ManagerBasedRlEnv, asset: Entity, knee_full: float, knee_zero: float) -> torch.Tensor:
+    """Smoothstep gate on the more-bent knee: 1 with both knees within
+    knee_full rad of straight, 0 with either past knee_zero. A tucked
+    headstand (knees ±1.5) scores 0 on every hold term."""
+    q = _servo_joint_pos(env, asset)
+    worst = torch.maximum(q[:, 3].abs(), q[:, 12].abs())
+    return _smoothstep(-worst, -knee_zero, -knee_full)
+
+
+def reset_headstand_spawn(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    standing_prob: float = 0.2,
+    partway_prob: float = 0.4,
+    hold_prob: float = 0.4,
+    standing_z_min: float = 0.11,
+    standing_z_max: float = 0.12,
+    standing_tilt_max: float = math.radians(3.0),
+    partway_pitch_min: float = math.radians(125.0),
+    partway_pitch_max: float = math.radians(165.0),
+    partway_lerp_range: tuple = (0.4, 1.0),
+    hold_pitch_noise: float = math.radians(8.0),
+    hold_z: float = 0.120,
+    hold_overrides: Optional[dict] = None,
+    joint_noise_std: float = 0.05,
+):
+    """Reset into one of three buckets: standing (the whole entry), partway
+    (head on the floor, trunk part way through the swing) or hold (dropped
+    into the headstand pose). The reverse curriculum in the cfg shifts the
+    mix from hold-heavy to standing-heavy as the skill appears.
+
+    Standing: HOME joints (left by reset_robot_joints), z in the standing band,
+    ±standing_tilt_max pitch/roll, random yaw, latch cleared.
+    Partway: trunk pitched partway_pitch_min..max forward (90° = horizontal,
+    180° = inverted), joints lerped HOME→hold by a per-env factor, z from the
+    measured table so nothing starts inside the floor, latch set. Keep
+    partway_pitch_min ≥ 125°: below that the head-top axis does not yet point
+    down and the latch would be a lie.
+    Hold: hold pose ± noise, inverted ± hold_pitch_noise, z = hold_z (the
+    measured rest z plus 3 mm), latch set.
+    """
+    if env_ids is None or len(env_ids) == 0:
+        return
+    env_ids = env_ids.to(env.device, dtype=torch.long)
+    num = len(env_ids)
+    asset: Entity = env.scene[asset_cfg.name]
+    _headstand_state(env)
+
+    total = standing_prob + partway_prob + hold_prob
+    u = torch.rand(num, device=env.device) * total
+    is_partway = (u >= standing_prob) & (u < standing_prob + partway_prob)
+    is_hold = u >= standing_prob + partway_prob
+
+    yaw = torch.rand(num, device=env.device) * 2 * np.pi - np.pi
+    pitch = (torch.rand(num, device=env.device) * 2 - 1) * standing_tilt_max
+    partway_pitch = torch.rand(num, device=env.device) * (partway_pitch_max - partway_pitch_min) + partway_pitch_min
+    hold_pitch = np.pi + (torch.rand(num, device=env.device) * 2 - 1) * hold_pitch_noise
+    pitch = torch.where(is_partway, partway_pitch, pitch)
+    pitch = torch.where(is_hold, hold_pitch, pitch)
+    roll = (torch.rand(num, device=env.device) * 2 - 1) * math.radians(5.0)
+
+    cy, sy = torch.cos(yaw * 0.5), torch.sin(yaw * 0.5)
+    cp, sp = torch.cos(pitch * 0.5), torch.sin(pitch * 0.5)
+    cr, sr = torch.cos(roll * 0.5), torch.sin(roll * 0.5)
+    # ZYX intrinsic Euler → quaternion (yaw * pitch * roll), as in set_random_ground_state.
+    quat = torch.stack([
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    ], dim=1)
+
+    z_stand = torch.rand(num, device=env.device) * (standing_z_max - standing_z_min) + standing_z_min
+    table_deg = _HEADSTAND_SPAWN_PITCH_DEG.to(env.device)
+    table_z = _HEADSTAND_SPAWN_Z.to(env.device)
+    deg = torch.rad2deg(pitch).clamp(table_deg[0], table_deg[-1])
+    idx = torch.clamp(torch.searchsorted(table_deg, deg, right=True) - 1, 0, len(table_deg) - 2)
+    frac = (deg - table_deg[idx]) / (table_deg[idx + 1] - table_deg[idx])
+    z_partway = table_z[idx] + frac * (table_z[idx + 1] - table_z[idx])
+    new_z = torch.where(is_partway, z_partway, torch.where(is_hold, torch.full_like(z_stand, hold_z), z_stand))
+
+    env.sim.data.qpos[env_ids, 2] = new_z + _env_origin_z(env, env_ids)
+    env.sim.data.qpos[env_ids, 3:7] = quat
+    env.sim.data.qvel[env_ids, :6] = 0.0
+
+    servo_ids = _servo_joint_ids(env, asset)
+    posed = env_ids[is_partway | is_hold]
+    if len(posed) > 0 and hold_overrides:
+        lerp = torch.rand(len(posed), device=env.device) * (partway_lerp_range[1] - partway_lerp_range[0]) + partway_lerp_range[0]
+        lerp = torch.where(is_hold[is_partway | is_hold], torch.ones_like(lerp), lerp)
+        for jnt_idx, angle in hold_overrides.items():
+            col = 7 + servo_ids[jnt_idx]
+            home = env.sim.data.qpos[posed, col]
+            env.sim.data.qpos[posed, col] = home + lerp * (angle - home)
+    if len(posed) > 0 and joint_noise_std > 0.0:
+        cols = torch.tensor([7 + j for j in servo_ids], device=env.device, dtype=torch.long)
+        env.sim.data.qpos[posed.unsqueeze(1), cols.unsqueeze(0)] += (
+            torch.randn(len(posed), len(cols), device=env.device) * joint_noise_std
+        )
+
+    # Latch: partway and hold spawns are born with the head on the floor.
+    env._headstand_head_latch[env_ids] = is_partway | is_hold
+    env._headstand_prev_inverted[env_ids] = -torch.cos(pitch)
+
+
+def headstand_progress(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Potential-based swing shaping: Δ(inverted_cos) per step, support- and
+    flatness-gated.
+
+    Rising toward inverted pays, holding pays zero, falling back costs the
+    same amount, so rocking is a wash and camping earns nothing. Signed, so
+    the whole entry from standing telescopes to +2 in raw units. Rising while
+    nothing touches the floor pays nothing (the roulade support gate) but
+    falling while airborne still charges, so a hop cannot reset the
+    potential. Rising while tipped onto a shoulder pays nothing either
+    (roulade's sagittal flatness gate): a side-fold inverts the trunk just as
+    well and is not the entry.
+
+    Raw Δcos per step is ~0.02 at a natural swing speed; the 5× here makes a
+    full swing worth ~2/step × weight over ~1 s.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_headstand(env, asset)
+    inv = _inverted_cos(asset)
+    delta = inv - env._headstand_prev_inverted
+    env._headstand_prev_inverted = inv
+    supported = _sensor_any_contact(env, _HEADSTAND_SUPPORT_SENSOR)
+    if supported is not None:
+        delta = torch.where(supported, delta, torch.clamp(delta, max=0.0))
+    y_z = torch.nan_to_num(_lateral_axis_z(asset.data.root_link_quat_w), nan=1.0).abs()
+    flat = _smoothstep(-y_z, -_FLAT_ZERO, -_FLAT_FULL)
+    delta = torch.where(delta > 0, delta * flat, delta)
+    return delta * 5.0
+
+
+def headstand_composite(
+    env: ManagerBasedRlEnv,
+    target_height: float,
+    height_std: float,
+    inverted_std: float,
+    pose_std: float,
+    target_overrides: dict,
+    knee_full: float = 0.3,
+    knee_zero: float = 0.6,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """The hold: height Gaussian × inverted Gaussian × pose Gaussian ×
+    legs-straight gate, paid only on the head alone (live contacts) after a
+    legitimate arrival (latch).
+
+    Product of Gaussians (the standup composite lesson): a flop with the head
+    on the floor scores ~0 on height AND on inverted, a tripod or a
+    shoulder-stand is gated out by the live contacts, a tucked headstand by
+    the knee gate. Broad stds so a wobbly first headstand scores visibly.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_headstand(env, asset)
+    z = torch.nan_to_num(asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0)
+    height = torch.exp(-((z - target_height) / height_std) ** 2)
+    inv = _inverted_cos(asset)
+    inverted = torch.exp(-(1.0 - inv) / (inverted_std * inverted_std))  # 1-cos ≈ tilt²/2
+    pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
+    legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
+    return height * inverted * pose * legs * _headstand_on_head_alone(env) * env._headstand_head_latch.float()
+
+
+def headstand_inverted_sharp(
+    env: ManagerBasedRlEnv,
+    inverted_std: float,
+    pose_std: float,
+    target_overrides: dict,
+    knee_full: float = 0.3,
+    knee_zero: float = 0.6,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Sharp inverted term for the last degrees, flat-topped inside the
+    measured rest tilt (20°) so it never pulls past the validated balance
+    point, and carrying the pose factor and the knee gate so it cannot pay
+    for a tucked or any-leg headstand (review item 6). Same live gates as
+    the composite."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_headstand(env, asset)
+    inv = _inverted_cos(asset)
+    excess = torch.clamp((1.0 - inv) - (1.0 - _HEADSTAND_REST_TILT_COS), min=0.0)
+    sharp = torch.exp(-excess / (inverted_std * inverted_std))
+    pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
+    legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
+    return sharp * pose * legs * _headstand_on_head_alone(env) * env._headstand_head_latch.float()
+
+
+def headstand_not_inverted_tax(
+    env: ManagerBasedRlEnv,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """(1 - inverted_cos) every step after the head has landed. Roulade's
+    stand-tax lesson: once the head is down, parking in the head + feet
+    tripod is free without this and the swing is the only thing that costs.
+    Zero before the latch, so the fold is never taxed. Positive; negative
+    weight, introduced by curriculum once hold spawns balance."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_headstand(env, asset)
+    return (1.0 - _inverted_cos(asset)) * env._headstand_head_latch.float()
+
+
+def headstand_feet_down_penalty(
+    env: ManagerBasedRlEnv,
+    inverted_lo: float = 0.5,
+    inverted_hi: float = 0.82,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """A foot on the floor once the trunk is past ~60° toward inverted.
+
+    Zero during the fold and the tripod (feet belong on the floor there),
+    smoothstep to full between inverted_cos 0.5 (60° off) and 0.82 (35° off):
+    inside the head-only balance basin a foot down is a tripod, not a
+    headstand. Positive; use a negative weight.
+    """
+    asset: Entity = env.scene[asset_cfg.name]
+    feet = _sensor_any_contact(env, _HEADSTAND_FEET_SENSOR)
+    if feet is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    return feet.float() * _smoothstep(_inverted_cos(asset), inverted_lo, inverted_hi)
+
+
+def headstand_other_contact_penalty(
+    env: ManagerBasedRlEnv,
+) -> torch.Tensor:
+    """Any body other than the head or a foot on the floor: a thigh, a shin,
+    the trunk, the neck. Every flop and every collapse is one of these.
+    Positive; use a negative weight."""
+    other = _sensor_any_contact(env, _HEADSTAND_OTHER_SENSOR)
+    if other is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    return other.float()
+
+
+def headstand_airborne_penalty(
+    env: ManagerBasedRlEnv,
+) -> torch.Tensor:
+    """Nothing touching the floor: the entry is a supported motion, so a
+    jump is a violation whatever it lands in. Positive; use a negative
+    weight. The tiny foot push Zach described keeps the head on the floor
+    and never trips this."""
+    supported = _sensor_any_contact(env, _HEADSTAND_SUPPORT_SENSOR)
+    if supported is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    return (~supported).float()
+
+
+def headstand_arrival_damping(
+    env: ManagerBasedRlEnv,
+    inverted_full: float = 0.94,
+    inverted_zero: float = 0.71,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Trunk ω_xy² gated on being near inverted: full within ~20° of the
+    headstand, zero beyond ~45°, so the swing itself is never taxed and only
+    the wobble around the balance point is damped (standup's arrival_damping
+    lesson, the gate flipped to the inverted side). Positive; negative weight,
+    introduced late by curriculum."""
+    asset: Entity = env.scene[asset_cfg.name]
+    ang_vel = asset.data.root_link_ang_vel_w
+    cost = torch.nan_to_num(torch.sum(torch.square(ang_vel[:, :2]), dim=1), nan=0.0)
+    return cost * _smoothstep(_inverted_cos(asset), inverted_zero, inverted_full)

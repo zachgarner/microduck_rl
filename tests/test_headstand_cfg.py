@@ -1,0 +1,230 @@
+"""Headstand cfg invariants (CPU, no GPU). Locks the physics-derived constants,
+the reward sign convention, the gate wiring and the 61D obs contract."""
+
+import math
+
+import mujoco
+import numpy as np
+import pytest
+
+from mjlab_microduck.tasks import mdp as microduck_mdp
+from mjlab_microduck.tasks.microduck_headstand_env_cfg import (
+    HEADSTAND_OVERRIDES,
+    HEADSTAND_Z,
+    MicroduckHeadstandRlCfg,
+    make_microduck_headstand_env_cfg,
+)
+from mjlab_microduck.robot.microduck_constants import MICRODUCK_ALLCOLLISIONS_XML
+
+
+def test_uses_the_allcollisions_model():
+    # The gates need to know WHICH body touched the floor (thigh, shin, trunk),
+    # and those bodies only collide on the allcollisions model.
+    cfg = make_microduck_headstand_env_cfg()
+    from mjlab_microduck.robot.microduck_constants import MICRODUCK_ALLCOLLISIONS_ROBOT_CFG
+    assert cfg.scene.entities["robot"] is MICRODUCK_ALLCOLLISIONS_ROBOT_CFG
+
+
+def test_hold_pose_is_inside_the_hard_joint_limits():
+    # The sweep's 1.6 rad left hip sat ON the hard limit and is not used. The
+    # neck (1.0 of 1.047) is the one joint past its 0.9 soft limit: that only
+    # costs dof_pos_limits 0.06/step against a hold paying ~5/step, and the
+    # in-soft-limit alternatives land half as often (Sep 18 2026 sweep).
+    m = mujoco.MjModel.from_xml_path(str(MICRODUCK_ALLCOLLISIONS_XML))
+    names = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, j) for j in range(m.njnt)]
+    servo = [n for n in names if n != "trunk_base_freejoint"]
+    assert len(servo) == 14 and len(HEADSTAND_OVERRIDES) == 14
+    for idx, angle in HEADSTAND_OVERRIDES.items():
+        jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, servo[idx])
+        lo, hi = m.jnt_range[jid]
+        assert lo + 0.04 <= angle <= hi - 0.04, (servo[idx], angle, lo, hi)
+
+
+def test_hold_pose_balances_on_the_head_alone():
+    # AGENTS.md step 2, locked: drop the hold pose inverted, hold 3 s, and it
+    # rests on jaw_soft alone with the trunk near inverted at HEADSTAND_Z.
+    scene = MICRODUCK_ALLCOLLISIONS_XML.parent / "scene_allcollisions.xml"
+    m = mujoco.MjModel.from_xml_path(str(scene))
+    d = mujoco.MjData(m)
+    joints = np.zeros(14)
+    for idx, angle in HEADSTAND_OVERRIDES.items():
+        joints[idx] = angle
+    d.qpos[7:] = joints
+    d.qpos[3:7] = [math.cos(math.pi / 2), 0.0, math.sin(math.pi / 2), 0.0]
+    d.qpos[0:3] = [0.0, 0.0, 0.135]
+    d.ctrl[:] = joints
+    for _ in range(int(3.0 / m.opt.timestep)):
+        mujoco.mj_step(m, d)
+    up_z = d.xmat[1].reshape(3, 3)[2, 2]
+    assert up_z < -0.85, up_z
+    floor = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    touching = set()
+    for i in range(d.ncon):
+        c = d.contact[i]
+        if floor in (c.geom1, c.geom2):
+            other = c.geom2 if c.geom1 == floor else c.geom1
+            touching.add(mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, m.geom_bodyid[other]))
+    assert touching == {"jaw_soft"}, touching
+    trunk_z = d.xpos[1][2]
+    assert abs(trunk_z - HEADSTAND_Z) < 0.01, trunk_z
+
+
+def test_reward_signs_follow_the_convention():
+    # mjlab-style costs (≥ 0) take a negative weight; the self-negating
+    # trunk_vertical_accel_penalty takes a POSITIVE weight. A wrong sign here
+    # pays for the violation and the policy farms it.
+    cfg = make_microduck_headstand_env_cfg()
+    for name in ("headstand_feet_down", "headstand_other_contact", "headstand_airborne",
+                 "headstand_overspeed", "head_impact", "action_rate_l2", "body_ang_vel",
+                 "angular_momentum", "self_collisions"):
+        assert cfg.rewards[name].weight < 0.0, name
+    assert cfg.rewards["headstand_not_inverted"].weight == 0.0  # curriculum introduces it
+    assert cfg.rewards["gentle"].weight > 0.0
+    assert cfg.rewards["gentle"].func is microduck_mdp.trunk_vertical_accel_penalty
+    for name in ("headstand_progress", "headstand_composite", "headstand_inverted_sharp"):
+        assert cfg.rewards[name].weight > 0.0, name
+    assert cfg.rewards["headstand_arrival_damping"].weight == 0.0  # curriculum introduces it
+    assert "upright" not in cfg.rewards  # always-on upright would oppose the trick
+
+
+def test_sensors_are_registered_under_the_names_mdp_reads():
+    cfg = make_microduck_headstand_env_cfg()
+    names = {s.name for s in cfg.scene.sensors}
+    for expected in (microduck_mdp._HEADSTAND_HEAD_SENSOR, microduck_mdp._HEADSTAND_FEET_SENSOR,
+                     microduck_mdp._HEADSTAND_OTHER_SENSOR, microduck_mdp._HEADSTAND_SUPPORT_SENSOR):
+        assert expected in names, expected
+
+
+def test_other_contact_pattern_excludes_head_and_feet_only():
+    import re
+    cfg = make_microduck_headstand_env_cfg()
+    other = next(s for s in cfg.scene.sensors if s.name == microduck_mdp._HEADSTAND_OTHER_SENSOR)
+    pat = re.compile(other.primary.pattern)
+    for allowed in ("jaw_soft", "yaw_roll_motion", "neck_pitch", "ankle_left", "ankle_right"):
+        assert not pat.match(allowed), allowed
+    for flop in ("trunk_base", "upper_leg_left", "upper_leg_right", "leg", "leg_2", "neck", "hip_l"):
+        assert pat.match(flop), flop
+
+
+def test_spawn_mix_moves_from_hold_to_standing():
+    cfg = make_microduck_headstand_env_cfg()
+    stages = cfg.curriculum["headstand_spawn_mix"].params["param_stages"]
+    hold = [s["params"]["hold_prob"] for s in stages]
+    standing = [s["params"]["standing_prob"] for s in stages]
+    assert hold == sorted(hold, reverse=True) and standing == sorted(standing)
+    assert stages[0]["params"] == {k: cfg.events["set_headstand_spawn"].params[k] for k in stages[0]["params"]}
+
+
+def test_spawn_height_table_is_monotone_in_pitch_index():
+    assert len(microduck_mdp._HEADSTAND_SPAWN_PITCH_DEG) == len(microduck_mdp._HEADSTAND_SPAWN_Z)
+    assert float(microduck_mdp._HEADSTAND_SPAWN_PITCH_DEG[0]) == 90.0
+    assert float(microduck_mdp._HEADSTAND_SPAWN_PITCH_DEG[-1]) == 180.0
+
+
+def test_symmetry_is_off_for_the_asymmetric_split():
+    assert MicroduckHeadstandRlCfg.algorithm.symmetry_cfg is None
+    assert MicroduckHeadstandRlCfg.experiment_name == "microduck_headstand"
+
+
+def test_pushes_and_fall_termination_are_off():
+    cfg = make_microduck_headstand_env_cfg()
+    assert "push_robot" not in cfg.events
+    assert "fell_over" not in cfg.terminations
+    assert "nan_state" in cfg.terminations
+
+
+def test_obs_parity_with_standup():
+    # The ONNX must load in the runtime's policy slot: same term order as the
+    # standup policy, group by group.
+    from mjlab_microduck.tasks.microduck_standup_env_cfg import make_microduck_standup_env_cfg
+    head = make_microduck_headstand_env_cfg()
+    stand = make_microduck_standup_env_cfg()
+    for grp in ("actor", "critic"):
+        assert list(head.observations[grp].terms.keys()) == list(stand.observations[grp].terms.keys()), grp
+
+
+# ── Review fixes, Sep 18 2026 ──────────────────────────────────────────────────
+
+def test_contact_solver_budget_matches_the_full_collision_tasks():
+    cfg = make_microduck_headstand_env_cfg()
+    assert cfg.sim.nconmax >= 200
+    assert cfg.sim.mujoco.iterations >= 30 and cfg.sim.mujoco.ls_iterations >= 50
+
+
+def test_feet_sensor_covers_the_whole_ankle_bodies():
+    # The servo housing on the ankle sits below the sole when pitched; a
+    # sole-only sensor let a head + housing tripod pass every gate.
+    cfg = make_microduck_headstand_env_cfg()
+    feet = next(s for s in cfg.scene.sensors if s.name == microduck_mdp._HEADSTAND_FEET_SENSOR)
+    assert feet.primary.mode == "body"
+    import re
+    assert re.fullmatch(feet.primary.pattern, "ankle_left") and re.fullmatch(feet.primary.pattern, "ankle_right")
+
+
+def test_head_sensor_carries_force_for_the_impact_penalty():
+    cfg = make_microduck_headstand_env_cfg()
+    head = next(s for s in cfg.scene.sensors if s.name == microduck_mdp._HEADSTAND_HEAD_SENSOR)
+    assert "force" in head.fields and "found" in head.fields
+    assert cfg.rewards["head_impact"].params["sensor_name"] == head.name
+
+
+def test_partway_spawns_start_above_the_floor():
+    # Every (pitch, lerp, roll, noise) the spawn can draw must leave the lowest
+    # collision corner above the floor. The first table put 51% inside it.
+    import sys
+    sys.path.insert(0, "scripts/headstand")
+    from settle_sweep import lowest_point_z
+    scene = MICRODUCK_ALLCOLLISIONS_XML.parent / "scene_allcollisions.xml"
+    m = mujoco.MjModel.from_xml_path(str(scene))
+    d = mujoco.MjData(m)
+    cfg = make_microduck_headstand_env_cfg()
+    p = cfg.events["set_headstand_spawn"].params
+    target = np.zeros(14)
+    for idx, angle in HEADSTAND_OVERRIDES.items():
+        target[idx] = angle
+    home = np.array([0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0, 0, 0, 0.0873, 0.4579, 0.0049, -0.4530])
+    rng = np.random.default_rng(3)
+    table_deg = microduck_mdp._HEADSTAND_SPAWN_PITCH_DEG.numpy()
+    table_z = microduck_mdp._HEADSTAND_SPAWN_Z.numpy()
+    below = 0
+    for _ in range(300):
+        pitch = rng.uniform(p["partway_pitch_min"], p["partway_pitch_max"])
+        u = rng.uniform(*p["partway_lerp_range"])
+        roll = rng.uniform(-math.radians(5), math.radians(5))
+        q = home + u * (target - home) + rng.normal(0, p["joint_noise_std"], 14)
+        z = np.interp(math.degrees(pitch), table_deg, table_z)
+        cp, sp, cr, sr = math.cos(pitch / 2), math.sin(pitch / 2), math.cos(roll / 2), math.sin(roll / 2)
+        d.qpos[7:] = q
+        d.qpos[3:7] = [cr * cp, sr * cp, cr * sp, -sr * sp]
+        d.qpos[0:3] = [0.0, 0.0, z]
+        mujoco.mj_forward(m, d)
+        below += lowest_point_z(m, d) < 0.0
+    assert below == 0, f"{below} of 300 partway spawns start inside the floor"
+
+
+def test_partway_spawns_begin_where_the_head_top_points_down():
+    cfg = make_microduck_headstand_env_cfg()
+    assert cfg.events["set_headstand_spawn"].params["partway_pitch_min"] >= math.radians(125.0)
+    assert abs(cfg.events["set_headstand_spawn"].params["hold_z"] - HEADSTAND_Z) < 0.005
+
+
+def test_curricula_are_paced_like_the_roulade():
+    cfg = make_microduck_headstand_env_cfg()
+    mix = [s["step"] for s in cfg.curriculum["headstand_spawn_mix"].params["param_stages"]]
+    assert mix[1] >= 1500 * 24 and mix[-1] >= 5000 * 24
+    for name in ("arrival_damping_weight", "torque_rate_weight"):
+        first_nonzero = next(s["step"] for s in cfg.curriculum[name].params["weight_stages"] if s["weight"] != 0.0)
+        assert first_nonzero >= 2500 * 24, name
+    ladder = [s["weight"] for s in cfg.curriculum["action_rate_weight"].params["weight_stages"]]
+    assert ladder[0] == cfg.rewards["action_rate_l2"].weight
+    assert abs(ladder[-1]) <= 0.5  # standup's -1.0 scaled by this task's reward mass
+    assert MicroduckHeadstandRlCfg.max_iterations >= 6000
+
+
+def test_sharp_term_is_flat_inside_the_rest_tilt():
+    # 1-cos(20°) is the plateau edge; a perfect vertical must not pay more
+    # than the measured rest tilt does.
+    assert abs(microduck_mdp._HEADSTAND_REST_TILT_COS - math.cos(math.radians(20.0))) < 1e-9
+    cfg = make_microduck_headstand_env_cfg()
+    params = cfg.rewards["headstand_inverted_sharp"].params
+    assert params["target_overrides"] is HEADSTAND_OVERRIDES and params["knee_zero"] > params["knee_full"] > 0.0
