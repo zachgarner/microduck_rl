@@ -7443,6 +7443,19 @@ _HEADSTAND_SPAWN_Z = torch.tensor([0.092, 0.115, 0.133, 0.150, 0.166, 0.172, 0.1
 # Static rest tilt of the hold pose: the sharp term is flat inside this.
 _HEADSTAND_REST_TILT_COS = math.cos(math.radians(20.0))
 
+# Run 1 (Sep 20 2026, wandb rfcisbwg) lessons, both visible in its rollouts:
+#   • It parked in a beak-down head+feet tripod from every standing spawn
+#     (16/16 at iterations 250 and 2250). The park tax was gated on the
+#     head-top latch and a beak-plant never sets it, so the tripod was free
+#     and the swing potential had paid +10 to reach it. The tax is now
+#     ALWAYS on (standup's height-L1 lesson): every step not inverted costs.
+#   • It slammed the head down at 3× body weight (median 21 N, worst 54 N)
+#     because the hold annuity (~5.5/step for seconds) dwarfed a one-off
+#     impact fine. AGENTS.md: gate the jackpot, don't tax the speed. A head
+#     contact above _HEADSTAND_SLAM_N at any time marks the episode and a
+#     marked episode never pays the hold.
+_HEADSTAND_SLAM_N = 12.0   # ≈ 1.7× the 7.2 N body weight
+
 
 def _inverted_cos(asset: Entity) -> torch.Tensor:
     """-R[2,2] of the trunk: +1 perfect headstand, 0 horizontal, -1 standing."""
@@ -7459,8 +7472,17 @@ def _smoothstep(x: torch.Tensor, lo: float, hi: float) -> torch.Tensor:
 def _headstand_state(env: ManagerBasedRlEnv) -> None:
     if not hasattr(env, "_headstand_head_latch"):
         env._headstand_head_latch = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        env._headstand_slammed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         env._headstand_prev_inverted = torch.full((env.num_envs,), -1.0, device=env.device)
         env._headstand_last_update_step = -1
+
+
+def _head_floor_force(env: ManagerBasedRlEnv) -> torch.Tensor | None:
+    """Peak head-to-floor contact force per env (N), or None without the sensor."""
+    if _HEADSTAND_HEAD_SENSOR not in env.scene.sensors:
+        return None
+    f = env.scene.sensors[_HEADSTAND_HEAD_SENSOR].data.force
+    return torch.nan_to_num(f.view(f.shape[0], -1, 3).norm(dim=-1).amax(dim=-1), nan=0.0)
 
 
 def _update_headstand(env: ManagerBasedRlEnv, asset: Entity) -> None:
@@ -7479,7 +7501,16 @@ def _update_headstand(env: ManagerBasedRlEnv, asset: Entity) -> None:
         head = _sensor_any_contact(env, _HEADSTAND_HEAD_SENSOR)
         if head is not None:
             env._headstand_head_latch = env._headstand_head_latch | (head & _head_top_down(env, asset))
+        force = _head_floor_force(env)
+        if force is not None:
+            env._headstand_slammed = env._headstand_slammed | (force > _HEADSTAND_SLAM_N)
         env._headstand_last_update_step = step
+
+
+def _headstand_arrived_gently(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """1 where the head-top latch is set and no head contact ever exceeded the
+    slam threshold this episode. The hold rewards multiply by this."""
+    return (env._headstand_head_latch & ~env._headstand_slammed).float()
 
 
 def _headstand_on_head_alone(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -7607,8 +7638,10 @@ def reset_headstand_spawn(
             torch.randn(len(posed), len(cols), device=env.device) * joint_noise_std
         )
 
-    # Latch: partway and hold spawns are born with the head on the floor.
+    # Latch: partway and hold spawns are born with the head on the floor, and
+    # nobody has slammed yet.
     env._headstand_head_latch[env_ids] = is_partway | is_hold
+    env._headstand_slammed[env_ids] = False
     env._headstand_prev_inverted[env_ids] = -torch.cos(pitch)
 
 
@@ -7673,7 +7706,7 @@ def headstand_composite(
     inverted = torch.exp(-(1.0 - inv) / (inverted_std * inverted_std))  # 1-cos ≈ tilt²/2
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
-    return height * inverted * pose * legs * _headstand_on_head_alone(env) * env._headstand_head_latch.float()
+    return height * inverted * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env)
 
 
 def headstand_inverted_sharp(
@@ -7697,21 +7730,20 @@ def headstand_inverted_sharp(
     sharp = torch.exp(-excess / (inverted_std * inverted_std))
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
-    return sharp * pose * legs * _headstand_on_head_alone(env) * env._headstand_head_latch.float()
+    return sharp * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env)
 
 
 def headstand_not_inverted_tax(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """(1 - inverted_cos) every step after the head has landed. Roulade's
-    stand-tax lesson: once the head is down, parking in the head + feet
-    tripod is free without this and the swing is the only thing that costs.
-    Zero before the latch, so the fold is never taxed. Positive; negative
-    weight, introduced by curriculum once hold spawns balance."""
+    """(1 - inverted_cos) every step, always on: 2 standing, 1 horizontal, 0
+    in the headstand. Standup's height-L1 lesson, run 1's beak-tripod lesson:
+    the only state that costs nothing per step is the trick itself, so
+    parking anywhere is net negative. Positive; negative weight."""
     asset: Entity = env.scene[asset_cfg.name]
     _update_headstand(env, asset)
-    return (1.0 - _inverted_cos(asset)) * env._headstand_head_latch.float()
+    return 1.0 - _inverted_cos(asset)
 
 
 def headstand_feet_down_penalty(

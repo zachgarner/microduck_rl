@@ -78,7 +78,7 @@ def test_reward_signs_follow_the_convention():
                  "headstand_overspeed", "head_impact", "action_rate_l2", "body_ang_vel",
                  "angular_momentum", "self_collisions"):
         assert cfg.rewards[name].weight < 0.0, name
-    assert cfg.rewards["headstand_not_inverted"].weight == 0.0  # curriculum introduces it
+    assert cfg.rewards["headstand_not_inverted"].weight < 0.0  # always on since run 1's tripod park
     assert cfg.rewards["gentle"].weight > 0.0
     assert cfg.rewards["gentle"].func is microduck_mdp.trunk_vertical_accel_penalty
     for name in ("headstand_progress", "headstand_composite", "headstand_inverted_sharp"):
@@ -228,3 +228,12 @@ def test_sharp_term_is_flat_inside_the_rest_tilt():
     cfg = make_microduck_headstand_env_cfg()
     params = cfg.rewards["headstand_inverted_sharp"].params
     assert params["target_overrides"] is HEADSTAND_OVERRIDES and params["knee_zero"] > params["knee_full"] > 0.0
+
+
+def test_run1_lessons_park_tax_always_on_and_slam_gate():
+    cfg = make_microduck_headstand_env_cfg()
+    stages = cfg.curriculum["not_inverted_weight"].params["weight_stages"]
+    assert stages[0]["weight"] == cfg.rewards["headstand_not_inverted"].weight < 0.0
+    assert microduck_mdp._HEADSTAND_SLAM_N < 15.0 and microduck_mdp._HEADSTAND_SLAM_N > 7.2
+    # a 21 N landing (run 1's median) must cost more than one step of the hold
+    assert -cfg.rewards["head_impact"].weight * (21.0 - cfg.rewards["head_impact"].params["threshold"]) > 5.5

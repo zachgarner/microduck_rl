@@ -76,10 +76,10 @@ IMU_ORIENTATION_RANDOMIZATION_ANGLE = 6.0
 # Episode: fold ~1.5 s + swing ~1 s + hold. 6 s leaves ~3 s of hold to pay.
 EPISODE_LENGTH_S = 6.0
 
-# Head impact: force on jaw_soft from the floor above this is billed (velstand
-# uses 15 N ≈ 2× body weight for its head; the whole 7 N body rests on the
-# head here, so the threshold sits well above the static load).
-HEAD_IMPACT_THRESH_N = 15.0
+# Head impact: force on jaw_soft from the floor above this is billed. The
+# static load in the hold is the whole 7.2 N body; the slam gate in mdp.py
+# sits at 12 N, this fine starts at 10 N so a hard settle is priced too.
+HEAD_IMPACT_THRESH_N = 10.0
 
 # ── The hold pose (servo index → rad), measured Sep 18 2026 ───────────────────
 # Hip yaw/roll, knees, ankles and head yaw/roll are 0 (NOT HOME: that is where
@@ -262,12 +262,12 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
             "knee_zero":        0.6,
         },
     )
-    # Post-latch park tax (roulade's stand tax): after the head lands, every
-    # step short of inverted costs. Starts at 0; the curriculum below brings it
-    # in once hold spawns balance, so the swing is discovered before it is taxed.
+    # Park tax, ALWAYS on (run 1 parked in a beak-down tripod the latched
+    # version never saw): standing costs 1.0/step, a tripod 0.5/step, the
+    # headstand 0. Same role as standup's height_stand_l1.
     cfg.rewards["headstand_not_inverted"] = RewardTermCfg(
         func=microduck_mdp.headstand_not_inverted_tax,
-        weight=0.0,
+        weight=-0.5,
     )
     # Gates — hard, from step 0, cheap to compute, impossible to farm.
     cfg.rewards["headstand_feet_down"] = RewardTermCfg(
@@ -294,9 +294,13 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
     # Head impact: N above threshold on jaw_soft from the floor (velstand's
     # body_impact_cost). The arrival jackpot buys violence unless planting the
     # head hard costs something the trunk accelerometer alone cannot see.
+    # Run 1 slammed at a median 21 N against a 15 N / 0.02 per N fine (0.12
+    # once, vs a ~5.5/step hold). The structural fix is the slam gate in
+    # _headstand_arrived_gently (a slam forfeits the hold for the episode);
+    # this fine is raised so the steps it does apply to still hurt.
     cfg.rewards["head_impact"] = RewardTermCfg(
         func=microduck_mdp.body_impact_cost,
-        weight=-0.02,
+        weight=-1.0,
         params={"sensor_name": head_ground_cfg.name, "threshold": HEAD_IMPACT_THRESH_N},
     )
     # Whip tax above the measured natural tumble band (roulade run-4: p90
@@ -533,15 +537,14 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
             ],
         },
     )
-    # The park tax comes in once hold spawns balance (~1000 iters for a simple
-    # episodic trick per AGENTS.md budgets) and before standing spawns grow.
+    # The park tax is on from step 0 and tightens once hold spawns balance.
     cfg.curriculum["not_inverted_weight"] = CurriculumTermCfg(
         func=microduck_mdp.reward_weight,
         params={
             "reward_name": "headstand_not_inverted",
             "weight_stages": [
-                {"step": 0,          "weight": 0.0},
-                {"step": 1000 * 24,  "weight": -0.5},
+                {"step": 0,          "weight": -0.5},
+                {"step": 1000 * 24,  "weight": -0.75},
                 {"step": 2000 * 24,  "weight": -1.0},
             ],
         },
