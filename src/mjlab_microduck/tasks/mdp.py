@@ -7501,6 +7501,7 @@ def _headstand_state(env: ManagerBasedRlEnv) -> None:
         env._headstand_head_latch = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         env._headstand_slammed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         env._headstand_prev_inverted = torch.full((env.num_envs,), -1.0, device=env.device)
+        env._headstand_max_inverted = torch.full((env.num_envs,), -1.0, device=env.device)
         env._headstand_last_update_step = -1
 
 
@@ -7675,40 +7676,52 @@ def reset_headstand_spawn(
     env._headstand_head_latch[env_ids] = latched_partway | is_hold
     env._headstand_slammed[env_ids] = False
     env._headstand_prev_inverted[env_ids] = -torch.cos(pitch)
+    env._headstand_max_inverted[env_ids] = -torch.cos(pitch)
 
 
 def headstand_progress(
     env: ManagerBasedRlEnv,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-    """Potential-based swing shaping: Δ(inverted_cos) per step, support- and
-    flatness-gated.
+    """Swing shaping: pay each NEW furthest inverted_cos reached this episode
+    (the roulade's progress-frontier rule), never charge falling back.
 
-    Rising toward inverted pays, holding pays zero, falling back costs the
-    same amount, so rocking is a wash and camping earns nothing. Signed, so
-    the whole entry from standing telescopes to +2 in raw units. Rising while
-    nothing touches the floor pays nothing (the roulade support gate) but
-    falling while airborne still charges, so a hop cannot reset the
-    potential. Rising while tipped onto a shoulder pays nothing either
-    (roulade's sagittal flatness gate): a side-fold inverts the trunk just as
-    well and is not the entry.
-
-    Raw Δcos per step is ~0.02 at a natural swing speed; the 5× here makes a
-    full swing worth ~2/step × weight over ~1 s.
+    Kick-up run 1 (Sep 20 2026, fejice5p) froze in the tripod: the signed
+    potential paid a half-swing +x and charged the fall back -x, so a failed
+    attempt earned nothing and paid the motion penalties, and freezing was the
+    optimum. Paying the frontier makes every attempt that gets further than
+    before worth something. Frontier moves only while supported, flat and
+    folding forward (the roulade support gate, its sagittal flatness gate,
+    and the nose-down gate), so a hop, a side-fold or a backward drop earns
+    nothing. Full swing from standing pays 2 raw × 5 = 10 × weight, once.
     """
     asset: Entity = env.scene[asset_cfg.name]
     _update_headstand(env, asset)
     inv = _inverted_cos(asset)
-    delta = inv - env._headstand_prev_inverted
-    env._headstand_prev_inverted = inv
     supported = _sensor_any_contact(env, _HEADSTAND_SUPPORT_SENSOR)
-    if supported is not None:
-        delta = torch.where(supported, delta, torch.clamp(delta, max=0.0))
     y_z = torch.nan_to_num(_lateral_axis_z(asset.data.root_link_quat_w), nan=1.0).abs()
-    flat = _smoothstep(-y_z, -_FLAT_ZERO, -_FLAT_FULL)
-    # Rising pays only in a flat, FORWARD fold; a backward drop earns nothing.
-    delta = torch.where(delta > 0, delta * flat * _forward_fold_gate(asset), delta)
-    return delta * 5.0
+    counts = _smoothstep(-y_z, -_FLAT_ZERO, -_FLAT_FULL) * _forward_fold_gate(asset)
+    if supported is not None:
+        counts = counts * supported.float()
+    gain = torch.clamp(inv - env._headstand_max_inverted, min=0.0) * counts
+    env._headstand_max_inverted = torch.maximum(env._headstand_max_inverted, env._headstand_max_inverted + gain)
+    env._headstand_prev_inverted = inv
+    return gain * 5.0
+
+
+def headstand_flopped(
+    env: ManagerBasedRlEnv,
+    grace_steps: int = 25,
+) -> torch.Tensor:
+    """Termination: a body other than the head or a foot is on the floor
+    (thigh, shin, trunk, neck) after the spawn settle. A failed attempt ends
+    the episode instead of being billed every remaining step, so trying is
+    never worse than freezing (AGENTS.md: no attempt-tax during discovery;
+    kick-up run 1 froze for exactly that reason)."""
+    other = _sensor_any_contact(env, _HEADSTAND_OTHER_SENSOR)
+    if other is None:
+        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    return other & (env.episode_length_buf > grace_steps)
 
 
 def headstand_composite(

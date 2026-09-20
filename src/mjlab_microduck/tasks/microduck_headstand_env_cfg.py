@@ -289,9 +289,13 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
         weight=-1.0,
         params={"inverted_lo": 0.5, "inverted_hi": 0.82},
     )
+    # A flop is a TERMINATION (below), not a per-step bill: kick-up run 1 froze
+    # in the tripod because a failed attempt that flopped cost -1/step for the
+    # rest of the episode while freezing cost -0.5. A small one-off cost
+    # remains so a flop is still worse than a clean miss.
     cfg.rewards["headstand_other_contact"] = RewardTermCfg(
         func=microduck_mdp.headstand_other_contact_penalty,
-        weight=-1.0,
+        weight=-0.2,
     )
     cfg.rewards["headstand_airborne"] = RewardTermCfg(
         func=microduck_mdp.headstand_airborne_penalty,
@@ -447,6 +451,11 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
         func=microduck_mdp.robot_state_is_nan,
         time_out=False,
         params={"sensor_names": (feet_ground_cfg.name,)},
+    )
+    cfg.terminations["flopped"] = TerminationTermCfg(
+        func=microduck_mdp.headstand_flopped,
+        time_out=False,
+        params={"grace_steps": 25},
     )
 
     # ── Events ────────────────────────────────────────────────────────────────

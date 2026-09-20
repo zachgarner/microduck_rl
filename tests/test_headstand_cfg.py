@@ -266,3 +266,12 @@ def test_kickup_never_spawns_standing_and_starts_in_the_tripod():
         assert stage["params"]["standing_prob"] == 0.0
     from mjlab_microduck.tasks.microduck_headstand_env_cfg import MicroduckHeadstandKickupRlCfg
     assert MicroduckHeadstandKickupRlCfg.experiment_name == "microduck_headstand_kickup"
+
+
+def test_flop_terminates_and_swing_pays_the_frontier():
+    cfg = make_microduck_headstand_env_cfg(kickup=True)
+    assert "flopped" in cfg.terminations and cfg.terminations["flopped"].time_out is False
+    assert cfg.rewards["headstand_other_contact"].weight > -0.5  # a one-off, not a per-step bill
+    import inspect
+    src = inspect.getsource(microduck_mdp.headstand_progress)
+    assert "_headstand_max_inverted" in src and "clamp(inv - env._headstand_max_inverted, min=0.0)" in src
