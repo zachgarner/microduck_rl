@@ -7438,7 +7438,9 @@ _HEADSTAND_SUPPORT_SENSOR = "robot_ground_contact"  # anything vs terrain
 # first table was a u=0.5..1.0 mean and put 51% of partway spawns inside the
 # floor (review item 2).
 _HEADSTAND_SPAWN_PITCH_DEG = torch.tensor([90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 160.0, 170.0, 180.0])
-_HEADSTAND_SPAWN_Z = torch.tensor([0.092, 0.115, 0.133, 0.150, 0.166, 0.172, 0.179, 0.179, 0.174, 0.165])
+# Re-measured for a joint lerp from HOME (u ∈ [0, 1]) once the kick-up policy
+# started spawning in the tripod with HOME-like legs.
+_HEADSTAND_SPAWN_Z = torch.tensor([0.099, 0.122, 0.143, 0.162, 0.175, 0.185, 0.190, 0.191, 0.187, 0.177])
 
 # Static rest tilt of the hold pose: the sharp term is flat inside this.
 _HEADSTAND_REST_TILT_COS = math.cos(math.radians(20.0))

@@ -254,3 +254,15 @@ def test_forward_fold_gate_is_zero_for_a_backward_drop():
     assert float(g(asset_with_pitch(180))) == 1.0      # inverted
     assert float(g(asset_with_pitch(-100))) == 0.0     # fallen on the back
     assert float(g(asset_with_pitch(-135))) == 0.0
+
+
+def test_kickup_never_spawns_standing_and_starts_in_the_tripod():
+    cfg = make_microduck_headstand_env_cfg(kickup=True)
+    p = cfg.events["set_headstand_spawn"].params
+    assert p["standing_prob"] == 0.0
+    assert abs(p["partway_pitch_min"] - math.radians(90.0)) < 1e-9
+    assert p["partway_lerp_range"][0] == 0.0
+    for stage in cfg.curriculum["headstand_spawn_mix"].params["param_stages"]:
+        assert stage["params"]["standing_prob"] == 0.0
+    from mjlab_microduck.tasks.microduck_headstand_env_cfg import MicroduckHeadstandKickupRlCfg
+    assert MicroduckHeadstandKickupRlCfg.experiment_name == "microduck_headstand_kickup"

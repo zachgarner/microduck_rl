@@ -78,6 +78,7 @@ from .microduck_roulade_env_cfg import (
 from .microduck_headstand_env_cfg import (
     make_microduck_headstand_env_cfg,
     MicroduckHeadstandRlCfg,
+    MicroduckHeadstandKickupRlCfg,
 )
 from .backlash import make_backlash_variant
 
@@ -244,6 +245,15 @@ register_mjlab_task(
     env_cfg=make_microduck_headstand_env_cfg(),
     play_env_cfg=make_microduck_headstand_env_cfg(play=True),
     rl_cfg=MicroduckHeadstandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Kick-up: starts head-down in the tripod, learns the swing and the hold only.
+register_mjlab_task(
+    task_id="Mjlab-HeadstandKickup-Flat-MicroDuck",
+    env_cfg=make_microduck_headstand_env_cfg(kickup=True),
+    play_env_cfg=make_microduck_headstand_env_cfg(play=True, kickup=True),
+    rl_cfg=MicroduckHeadstandKickupRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 

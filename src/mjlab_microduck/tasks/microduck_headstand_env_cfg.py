@@ -147,8 +147,15 @@ from mjlab_microduck.tasks.microduck_velocity_env_cfg import (
 from mjlab_microduck.tasks.symmetry import PpoWithSymmetryCfg, SYMMETRY_CFG
 
 
-def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """Create the Microduck headstand environment configuration."""
+def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -> ManagerBasedRlEnvCfg:
+    """Create the Microduck headstand environment configuration.
+
+    kickup=True is the KICK-UP policy (Zach, Sep 20 2026: "The kick up policy
+    is likely the one that matters"): episodes start head-down in the tripod
+    or further along, never standing, and the policy learns the swing and the
+    hold only. The fold from standing is another policy's job. Runs 1-5 with
+    standing starts all parked in the tripod; this policy starts there.
+    """
 
     # Whole ankle BODIES, not the sole geoms: each ankle carries three more
     # collision geoms (servo housing etc.) that sit 2–8 mm below the sole when
@@ -453,13 +460,18 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
     cfg.events["foot_friction"].params["ranges"] = (0.7, 1.3)
 
     # Spawn mix — stage 0 of the reverse curriculum below: mostly the hold.
+    standing_p0 = 0.0 if kickup else STANDING_PROB_STAGE0
+    # Kick-up: half the episodes start in the tripod band (90-110°, legs
+    # near HOME, feet down), the rest partway or in the hold.
+    partway_lerp = (0.0, 1.0) if kickup else (0.4, 1.0)
+    partway_min_deg = 90.0 if kickup else PARTWAY_PITCH_MIN_DEG
     cfg.events["set_headstand_spawn"] = EventTermCfg(
         func=microduck_mdp.reset_headstand_spawn,
         mode="reset",
         params={
-            "standing_prob":       STANDING_PROB_STAGE0,
-            "partway_prob":        0.35,
-            "hold_prob":           0.50,
+            "standing_prob":       standing_p0,
+            "partway_prob":        0.60 if kickup else 0.35,
+            "hold_prob":           0.40 if kickup else 0.50,
             "standing_z_min":      0.11,
             "standing_z_max":      0.12,
             "standing_tilt_max":   math.radians(3.0),
@@ -469,9 +481,9 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
             # curriculum rule). Partway now starts AT the tripod. Spawns
             # below ~122° are born un-latched (the head top is not down yet)
             # and latch as they rotate.
-            "partway_pitch_min":   math.radians(PARTWAY_PITCH_MIN_DEG),
+            "partway_pitch_min":   math.radians(partway_min_deg),
             "partway_pitch_max":   math.radians(165.0),
-            "partway_lerp_range":  (0.4, 1.0),
+            "partway_lerp_range":  partway_lerp,
             "hold_pitch_noise":    math.radians(8.0),
             "hold_z":              HEADSTAND_SPAWN_Z,
             "hold_overrides":      HEADSTAND_OVERRIDES,
@@ -543,6 +555,10 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
         params={
             "event_name": "set_headstand_spawn",
             "param_stages": [
+                {"step": 0,         "params": {"standing_prob": 0.0, "partway_prob": 0.60, "hold_prob": 0.40}},
+                {"step": 1500 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.70, "hold_prob": 0.30}},
+                {"step": 3000 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.80, "hold_prob": 0.20}},
+            ] if kickup else [
                 {"step": 0,         "params": {"standing_prob": STANDING_PROB_STAGE0, "partway_prob": 0.35, "hold_prob": 0.50}},
                 {"step": 1500 * 24, "params": {"standing_prob": 0.25, "partway_prob": 0.45, "hold_prob": 0.30}},
                 {"step": 3000 * 24, "params": {"standing_prob": 0.40, "partway_prob": 0.40, "hold_prob": 0.20}},
@@ -676,6 +692,20 @@ MicroduckHeadstandRlCfg = RslRlOnPolicyRunnerCfg(
     wandb_project="mjlab_microduck",
     experiment_name="microduck_headstand",
     run_name="microduck_headstand",
+    save_interval=250,
+    num_steps_per_env=24,
+    max_iterations=6_000,
+)
+
+# The kick-up policy: same network, its own experiment so checkpoints and
+# wandb runs never mix with the full-entry task.
+MicroduckHeadstandKickupRlCfg = RslRlOnPolicyRunnerCfg(
+    actor=MicroduckHeadstandRlCfg.actor,
+    critic=MicroduckHeadstandRlCfg.critic,
+    algorithm=MicroduckHeadstandRlCfg.algorithm,
+    wandb_project="mjlab_microduck",
+    experiment_name="microduck_headstand_kickup",
+    run_name="microduck_headstand_kickup",
     save_interval=250,
     num_steps_per_env=24,
     max_iterations=6_000,
