@@ -260,7 +260,7 @@ def test_kickup_never_spawns_standing_and_starts_in_the_tripod():
     cfg = make_microduck_headstand_env_cfg(kickup=True)
     p = cfg.events["set_headstand_spawn"].params
     assert p["standing_prob"] == 0.0
-    assert abs(p["partway_pitch_min"] - math.radians(90.0)) < 1e-9
+    assert math.radians(95.0) <= p["partway_pitch_min"] <= math.radians(105.0)   # partway starts just past the pike
     assert p["partway_lerp_range"][0] == 0.0
     for stage in cfg.curriculum["headstand_spawn_mix"].params["param_stages"]:
         assert stage["params"]["standing_prob"] == 0.0
@@ -275,3 +275,12 @@ def test_flop_terminates_and_swing_pays_the_frontier():
     import inspect
     src = inspect.getsource(microduck_mdp.headstand_progress)
     assert "_headstand_max_inverted" in src and "clamp(inv - env._headstand_max_inverted, min=0.0)" in src
+
+
+def test_kickup_spawns_in_the_pike():
+    cfg = make_microduck_headstand_env_cfg(kickup=True)
+    p = cfg.events["set_headstand_spawn"].params
+    assert p["tripod_prob"] > 0.0 and p["standing_prob"] == 0.0
+    assert math.radians(70) < microduck_mdp._HEADSTAND_TRIPOD_PITCH < math.radians(80)
+    assert microduck_mdp._HEADSTAND_PIKE_QPOS.shape == (21,)
+    assert 0.09 < float(microduck_mdp._HEADSTAND_PIKE_QPOS[2]) < 0.12

@@ -470,17 +470,19 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
 
     # Spawn mix — stage 0 of the reverse curriculum below: mostly the hold.
     standing_p0 = 0.0 if kickup else STANDING_PROB_STAGE0
-    # Kick-up: half the episodes start in the tripod band (90-110°, legs
-    # near HOME, feet down), the rest partway or in the hold.
+    # Kick-up: 40% of episodes start in the RESTING tripod (measured settled
+    # state, head and feet on the floor from step 0), 30% partway through the
+    # swing, 30% in the hold.
     partway_lerp = (0.0, 1.0) if kickup else (0.4, 1.0)
-    partway_min_deg = 90.0 if kickup else PARTWAY_PITCH_MIN_DEG
+    partway_min_deg = 100.0 if kickup else PARTWAY_PITCH_MIN_DEG
     cfg.events["set_headstand_spawn"] = EventTermCfg(
         func=microduck_mdp.reset_headstand_spawn,
         mode="reset",
         params={
             "standing_prob":       standing_p0,
-            "partway_prob":        0.60 if kickup else 0.35,
-            "hold_prob":           0.40 if kickup else 0.50,
+            "partway_prob":        0.30 if kickup else 0.35,
+            "hold_prob":           0.30 if kickup else 0.50,
+            "tripod_prob":         0.40 if kickup else 0.0,
             "standing_z_min":      0.11,
             "standing_z_max":      0.12,
             "standing_tilt_max":   math.radians(3.0),
@@ -564,9 +566,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
         params={
             "event_name": "set_headstand_spawn",
             "param_stages": [
-                {"step": 0,         "params": {"standing_prob": 0.0, "partway_prob": 0.60, "hold_prob": 0.40}},
-                {"step": 1500 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.70, "hold_prob": 0.30}},
-                {"step": 3000 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.80, "hold_prob": 0.20}},
+                {"step": 0,         "params": {"standing_prob": 0.0, "partway_prob": 0.30, "hold_prob": 0.30, "tripod_prob": 0.40}},
+                {"step": 1500 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.25, "hold_prob": 0.20, "tripod_prob": 0.55}},
+                {"step": 3000 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.65}},
             ] if kickup else [
                 {"step": 0,         "params": {"standing_prob": STANDING_PROB_STAGE0, "partway_prob": 0.35, "hold_prob": 0.50}},
                 {"step": 1500 * 24, "params": {"standing_prob": 0.25, "partway_prob": 0.45, "hold_prob": 0.30}},

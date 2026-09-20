@@ -7445,6 +7445,15 @@ _HEADSTAND_SPAWN_Z = torch.tensor([0.099, 0.122, 0.143, 0.162, 0.175, 0.185, 0.1
 # Static rest tilt of the hold pose: the sharp term is flat inside this.
 _HEADSTAND_REST_TILT_COS = math.cos(math.radians(20.0))
 
+# The PIKE (Sep 20 2026, measured, Zach: "the pike is real nice looking"): head
+# tucked with its top on the floor, legs straight, both feet on the floor 15 cm
+# behind the head, hips up, trunk at 76° from standing. The kick-up policy's
+# start. Stored as the full settled qpos (base pose + 14 joints), so a spawn
+# is the resting state itself with no drop. Scripted pushes from here reach
+# 180° in 0.8 s (scripts/headstand/scripted_kickup.py).
+_HEADSTAND_PIKE_QPOS = torch.tensor([-0.1308, 0.0004, 0.1074, 0.7866, -0.0018, 0.6175, 0.0017, 0.0143, 0.015, -1.2441, 0.0849, 0.9495, -0.6523, 1.2342, 0.002, -0.0062, -0.0138, -0.0158, 1.2449, -0.0791, -0.9526])
+_HEADSTAND_TRIPOD_PITCH = math.radians(76.3)   # trunk angle of the pike, for the latch/progress bookkeeping
+
 # Run 1 (Sep 20 2026, wandb rfcisbwg) lessons, both visible in its rollouts:
 #   • It parked in a beak-down head+feet tripod from every standing spawn
 #     (16/16 at iterations 250 and 2250). The park tax was gated on the
@@ -7583,6 +7592,7 @@ def reset_headstand_spawn(
     standing_prob: float = 0.2,
     partway_prob: float = 0.4,
     hold_prob: float = 0.4,
+    tripod_prob: float = 0.0,
     standing_z_min: float = 0.11,
     standing_z_max: float = 0.12,
     standing_tilt_max: float = math.radians(3.0),
@@ -7616,10 +7626,11 @@ def reset_headstand_spawn(
     asset: Entity = env.scene[asset_cfg.name]
     _headstand_state(env)
 
-    total = standing_prob + partway_prob + hold_prob
+    total = standing_prob + partway_prob + hold_prob + tripod_prob
     u = torch.rand(num, device=env.device) * total
     is_partway = (u >= standing_prob) & (u < standing_prob + partway_prob)
-    is_hold = u >= standing_prob + partway_prob
+    is_hold = (u >= standing_prob + partway_prob) & (u < standing_prob + partway_prob + hold_prob)
+    is_tripod = u >= standing_prob + partway_prob + hold_prob
 
     yaw = torch.rand(num, device=env.device) * 2 * np.pi - np.pi
     pitch = (torch.rand(num, device=env.device) * 2 - 1) * standing_tilt_max
@@ -7627,6 +7638,9 @@ def reset_headstand_spawn(
     hold_pitch = np.pi + (torch.rand(num, device=env.device) * 2 - 1) * hold_pitch_noise
     pitch = torch.where(is_partway, partway_pitch, pitch)
     pitch = torch.where(is_hold, hold_pitch, pitch)
+    # Pike spawns get the whole measured resting qpos below; pitch here is only
+    # for the progress bookkeeping.
+    pitch = torch.where(is_tripod, torch.full_like(pitch, _HEADSTAND_TRIPOD_PITCH), pitch)
     roll = (torch.rand(num, device=env.device) * 2 - 1) * math.radians(5.0)
 
     cy, sy = torch.cos(yaw * 0.5), torch.sin(yaw * 0.5)
@@ -7648,6 +7662,7 @@ def reset_headstand_spawn(
     frac = (deg - table_deg[idx]) / (table_deg[idx + 1] - table_deg[idx])
     z_partway = table_z[idx] + frac * (table_z[idx + 1] - table_z[idx])
     new_z = torch.where(is_partway, z_partway, torch.where(is_hold, torch.full_like(z_stand, hold_z), z_stand))
+    new_z = torch.where(is_tripod, torch.full_like(z_stand, float(_HEADSTAND_PIKE_QPOS[2])), new_z)
 
     env.sim.data.qpos[env_ids, 2] = new_z + _env_origin_z(env, env_ids)
     env.sim.data.qpos[env_ids, 3:7] = quat
@@ -7668,12 +7683,21 @@ def reset_headstand_spawn(
             torch.randn(len(posed), len(cols), device=env.device) * joint_noise_std
         )
 
+    pike_ids = env_ids[is_tripod]
+    if len(pike_ids) > 0:
+        pike = _HEADSTAND_PIKE_QPOS.to(env.device)
+        env.sim.data.qpos[pike_ids, 2] = pike[2] + _env_origin_z(env, pike_ids)
+        env.sim.data.qpos[pike_ids, 3:7] = pike[3:7]
+        cols = torch.tensor([7 + j for j in servo_ids], device=env.device, dtype=torch.long)
+        env.sim.data.qpos[pike_ids.unsqueeze(1), cols.unsqueeze(0)] = pike[7:21] + torch.randn(len(pike_ids), 14, device=env.device) * joint_noise_std
+        env.sim.data.qvel[pike_ids, :] = 0.0
+
     # Latch: hold spawns are born with the head top on the floor; partway
     # spawns only once pitched past the point where the head top is down
     # (~122°, measured), otherwise they latch when they get there. Nobody
     # has slammed yet.
     latched_partway = is_partway & (pitch > math.radians(122.0))
-    env._headstand_head_latch[env_ids] = latched_partway | is_hold
+    env._headstand_head_latch[env_ids] = latched_partway | is_hold   # tripod spawns latch when the head top comes down
     env._headstand_slammed[env_ids] = False
     env._headstand_prev_inverted[env_ids] = -torch.cos(pitch)
     env._headstand_max_inverted[env_ids] = -torch.cos(pitch)
