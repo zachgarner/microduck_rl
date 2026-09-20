@@ -79,6 +79,8 @@ from .microduck_headstand_env_cfg import (
     make_microduck_headstand_env_cfg,
     MicroduckHeadstandRlCfg,
     MicroduckHeadstandKickupRlCfg,
+    MicroduckHeadstandKickupTuckedRlCfg,
+    MicroduckHeadstandKickupStraightRlCfg,
 )
 from .backlash import make_backlash_variant
 
@@ -254,6 +256,23 @@ register_mjlab_task(
     env_cfg=make_microduck_headstand_env_cfg(kickup=True),
     play_env_cfg=make_microduck_headstand_env_cfg(play=True, kickup=True),
     rl_cfg=MicroduckHeadstandKickupRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+# Two-leg kick-ups from the same pike: tucked (knees bent, legs together) and
+# straight (legs together, straight up).
+register_mjlab_task(
+    task_id="Mjlab-HeadstandKickupTucked-Flat-MicroDuck",
+    env_cfg=make_microduck_headstand_env_cfg(kickup=True, style="tucked"),
+    play_env_cfg=make_microduck_headstand_env_cfg(play=True, kickup=True, style="tucked"),
+    rl_cfg=MicroduckHeadstandKickupTuckedRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-HeadstandKickupStraight-Flat-MicroDuck",
+    env_cfg=make_microduck_headstand_env_cfg(kickup=True, style="straight"),
+    play_env_cfg=make_microduck_headstand_env_cfg(play=True, kickup=True, style="straight"),
+    rl_cfg=MicroduckHeadstandKickupStraightRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 

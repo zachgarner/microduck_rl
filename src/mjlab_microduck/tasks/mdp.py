@@ -7576,13 +7576,30 @@ def _headstand_pose_score(env: ManagerBasedRlEnv, asset: Entity, target_override
     return torch.exp(-err / (pose_std * pose_std))
 
 
-def _headstand_legs_straight(env: ManagerBasedRlEnv, asset: Entity, knee_full: float, knee_zero: float) -> torch.Tensor:
-    """Smoothstep gate on the more-bent knee: 1 with both knees within
-    knee_full rad of straight, 0 with either past knee_zero. A tucked
-    headstand (knees ±1.5) scores 0 on every hold term."""
+def _headstand_legs_straight(env: ManagerBasedRlEnv, asset: Entity, knee_full: float, knee_zero: float, style: str = "split") -> torch.Tensor:
+    """Leg gate for the hold, by style (Zach, Sep 20 2026, after the split
+    kick-up landed: "a double leg hop into headstand ... It would not go into
+    a split. The harder option would be ... a legs together straight headstand").
+
+    split:    both knees straight (within knee_full rad, 0 past knee_zero); the
+              hips are free, the split is the pose target's job.
+    tucked:   both knees BENT past knee_full (the day-one tucked pose, knees
+              ±1.5) and the hips symmetric: legs together, folded.
+    straight: both knees straight and the hips symmetric: legs together, up.
+    Symmetric hips = left hip_pitch + right hip_pitch ≈ 0 in the mirrored
+    joint convention (the split is exactly their sum).
+    """
     q = _servo_joint_pos(env, asset)
-    worst = torch.maximum(q[:, 3].abs(), q[:, 12].abs())
-    return _smoothstep(-worst, -knee_zero, -knee_full)
+    worst_knee = torch.maximum(q[:, 3].abs(), q[:, 12].abs())
+    if style == "tucked":
+        knees = _smoothstep(worst_knee, knee_full - 0.3, knee_full)          # both past knee_full = bent
+    else:
+        knees = _smoothstep(-worst_knee, -knee_zero, -knee_full)             # both within knee_full = straight
+    if style == "split":
+        return knees
+    split = (q[:, 2] + q[:, 11]).abs()
+    together = _smoothstep(-split, -0.6, -0.2)                               # 1 within 0.2 rad of symmetric, 0 past 0.6
+    return knees * together
 
 
 def reset_headstand_spawn(
@@ -7757,6 +7774,7 @@ def headstand_composite(
     target_overrides: dict,
     knee_full: float = 0.3,
     knee_zero: float = 0.6,
+    style: str = "split",
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """The hold: height Gaussian × inverted Gaussian × pose Gaussian ×
@@ -7775,7 +7793,7 @@ def headstand_composite(
     inv = _inverted_cos(asset)
     inverted = torch.exp(-(1.0 - inv) / (inverted_std * inverted_std))  # 1-cos ≈ tilt²/2
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
-    legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
+    legs = _headstand_legs_straight(env, asset, knee_full, knee_zero, style)
     return height * inverted * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
 
 
@@ -7786,6 +7804,7 @@ def headstand_inverted_sharp(
     target_overrides: dict,
     knee_full: float = 0.3,
     knee_zero: float = 0.6,
+    style: str = "split",
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Sharp inverted term for the last degrees, flat-topped inside the
@@ -7799,7 +7818,7 @@ def headstand_inverted_sharp(
     excess = torch.clamp((1.0 - inv) - (1.0 - _HEADSTAND_REST_TILT_COS), min=0.0)
     sharp = torch.exp(-excess / (inverted_std * inverted_std))
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
-    legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
+    legs = _headstand_legs_straight(env, asset, knee_full, knee_zero, style)
     return sharp * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
 
 

@@ -112,6 +112,14 @@ HEADSTAND_OVERRIDES = {
     12:  0.0,   # right knee
     13:  0.0,   # right ankle
 }
+# Two-leg variants (Zach, Sep 20 2026: "a double leg hop into headstand").
+# tucked: the day-one sweep's knees-bent pose that balanced on its own
+# (neck 1.0, head 1.5, hips 0.5, knees 1.5; trunk z 0.094 at rest).
+# straight: legs together and straight up. No static balance exists for it
+# (the day-one sweep found none), so the policy holds it actively.
+HEADSTAND_TUCKED_OVERRIDES = {0: 0.0, 1: 0.0, 2: 0.5, 3: -1.5, 4: 0.0, 5: 1.0, 6: 1.5, 7: 0.0, 8: 0.0, 9: 0.0, 10: 0.0, 11: -0.5, 12: 1.5, 13: 0.0}
+HEADSTAND_STRAIGHT_OVERRIDES = {0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 1.0, 6: 1.25, 7: 0.0, 8: 0.0, 9: 0.0, 10: 0.0, 11: 0.0, 12: 0.0, 13: 0.0}
+HEADSTAND_TUCKED_Z = 0.094
 # trunk_base z at rest in the hold pose (measured, allcollisions model).
 HEADSTAND_Z = 0.117
 # Hold spawns start here: the rest z plus 3 mm, so nothing falls in.
@@ -147,8 +155,11 @@ from mjlab_microduck.tasks.microduck_velocity_env_cfg import (
 from mjlab_microduck.tasks.symmetry import PpoWithSymmetryCfg, SYMMETRY_CFG
 
 
-def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -> ManagerBasedRlEnvCfg:
+def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, style: str = "split") -> ManagerBasedRlEnvCfg:
     """Create the Microduck headstand environment configuration.
+
+    style: "split" (the default hold), "tucked" (two-leg hop, knees bent,
+    legs together) or "straight" (two-leg hop, legs together straight up).
 
     kickup=True is the KICK-UP policy (Zach, Sep 20 2026: "The kick up policy
     is likely the one that matters"): episodes start head-down in the tripod
@@ -161,6 +172,13 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
     # collision geoms (servo housing etc.) that sit 2–8 mm below the sole when
     # the ankle is pitched, and a sole-only sensor read "feet off" while the
     # housing carried the tripod (review item 3).
+    if style == "tucked":
+        overrides, hold_z, knee_full, knee_zero = HEADSTAND_TUCKED_OVERRIDES, HEADSTAND_TUCKED_Z, 1.0, 1.3
+    elif style == "straight":
+        overrides, hold_z, knee_full, knee_zero = HEADSTAND_STRAIGHT_OVERRIDES, HEADSTAND_Z, 0.3, 0.6
+    else:
+        overrides, hold_z, knee_full, knee_zero = HEADSTAND_OVERRIDES, HEADSTAND_Z, 0.3, 0.6
+
     feet_ground_cfg = ContactSensorCfg(
         name=microduck_mdp._HEADSTAND_FEET_SENSOR,
         primary=ContactMatch(mode="body", pattern=r"^(ankle_left|ankle_right)$", entity="robot"),
@@ -253,13 +271,14 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
         func=microduck_mdp.headstand_composite,
         weight=4.0,
         params={
-            "target_height":    HEADSTAND_Z,
+            "target_height":    hold_z,
             "height_std":       0.03,   # 3 cm: a flop at z≈0.06 scores ~0.03
             "inverted_std":     0.6,    # 1-cos(35°)=0.18 → e^-0.5; the balance basin scores visibly
-            "pose_std":         0.45,   # joint-RMS, broad: partial split still scores
-            "target_overrides": HEADSTAND_OVERRIDES,
-            "knee_full":        0.3,    # both knees within 0.3 rad of straight → full
-            "knee_zero":        0.6,    # either knee past 0.6 → nothing (a tuck is not the trick)
+            "pose_std":         0.45,   # joint-RMS, broad: partial pose still scores
+            "target_overrides": overrides,
+            "knee_full":        knee_full,
+            "knee_zero":        knee_zero,
+            "style":            style,
         },
     )
     # Flat-topped inside the measured 20° rest tilt, Gaussian beyond it:
@@ -271,9 +290,10 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
         params={
             "inverted_std":     0.3,
             "pose_std":         0.45,
-            "target_overrides": HEADSTAND_OVERRIDES,
-            "knee_full":        0.3,
-            "knee_zero":        0.6,
+            "target_overrides": overrides,
+            "knee_full":        knee_full,
+            "knee_zero":        knee_zero,
+            "style":            style,
         },
     )
     # Park tax, ALWAYS on (run 1 parked in a beak-down tripod the latched
@@ -499,8 +519,8 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
             "partway_pitch_max":   math.radians(165.0),
             "partway_lerp_range":  partway_lerp,
             "hold_pitch_noise":    math.radians(8.0),
-            "hold_z":              HEADSTAND_SPAWN_Z,
-            "hold_overrides":      HEADSTAND_OVERRIDES,
+            "hold_z":              hold_z + 0.003,
+            "hold_overrides":      overrides,
             "joint_noise_std":     0.05,
         },
     )
@@ -709,6 +729,20 @@ MicroduckHeadstandRlCfg = RslRlOnPolicyRunnerCfg(
     num_steps_per_env=24,
     max_iterations=6_000,
 )
+
+def _two_leg_runner_cfg(name: str) -> RslRlOnPolicyRunnerCfg:
+    """Two-leg kick-up variants: symmetric trick, so Pollen's mirror loss is ON."""
+    from dataclasses import replace
+    algo = replace(MicroduckHeadstandRlCfg.algorithm, symmetry_cfg=SYMMETRY_CFG)
+    return RslRlOnPolicyRunnerCfg(
+        actor=MicroduckHeadstandRlCfg.actor, critic=MicroduckHeadstandRlCfg.critic, algorithm=algo,
+        wandb_project="mjlab_microduck", experiment_name=name, run_name=name,
+        save_interval=250, num_steps_per_env=24, max_iterations=6_000,
+    )
+
+
+MicroduckHeadstandKickupTuckedRlCfg = _two_leg_runner_cfg("microduck_headstand_kickup_tucked")
+MicroduckHeadstandKickupStraightRlCfg = _two_leg_runner_cfg("microduck_headstand_kickup_straight")
 
 # The kick-up policy: same network, its own experiment so checkpoints and
 # wandb runs never mix with the full-entry task.

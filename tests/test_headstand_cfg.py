@@ -287,3 +287,19 @@ def test_kickup_spawns_in_the_pike():
     assert math.radians(70) < microduck_mdp._HEADSTAND_TRIPOD_PITCH < math.radians(80)
     assert microduck_mdp._HEADSTAND_PIKE_QPOS.shape == (21,)
     assert 0.09 < float(microduck_mdp._HEADSTAND_PIKE_QPOS[2]) < 0.12
+
+
+def test_two_leg_styles_are_symmetric_and_target_legs_together():
+    from mjlab_microduck.tasks.microduck_headstand_env_cfg import (
+        MicroduckHeadstandKickupTuckedRlCfg, MicroduckHeadstandKickupStraightRlCfg,
+        HEADSTAND_TUCKED_OVERRIDES, HEADSTAND_STRAIGHT_OVERRIDES,
+    )
+    for style, rl in (("tucked", MicroduckHeadstandKickupTuckedRlCfg), ("straight", MicroduckHeadstandKickupStraightRlCfg)):
+        cfg = make_microduck_headstand_env_cfg(kickup=True, style=style)
+        assert cfg.rewards["headstand_composite"].params["style"] == style
+        assert rl.algorithm.symmetry_cfg is not None
+        ov = cfg.rewards["headstand_composite"].params["target_overrides"]
+        assert abs(ov[2] + ov[11]) < 1e-9   # hips symmetric: no split
+    assert abs(HEADSTAND_TUCKED_OVERRIDES[3]) >= 1.0 and HEADSTAND_STRAIGHT_OVERRIDES[3] == 0.0
+    from mjlab_microduck.tasks.microduck_headstand_env_cfg import MicroduckHeadstandKickupRlCfg
+    assert MicroduckHeadstandKickupRlCfg.algorithm.symmetry_cfg is None   # the split stays asymmetric
