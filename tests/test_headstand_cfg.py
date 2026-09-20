@@ -113,6 +113,7 @@ def test_spawn_mix_moves_from_hold_to_standing():
     standing = [s["params"]["standing_prob"] for s in stages]
     assert hold == sorted(hold, reverse=True) and standing == sorted(standing)
     assert stages[0]["params"] == {k: cfg.events["set_headstand_spawn"].params[k] for k in stages[0]["params"]}
+    assert cfg.events["set_headstand_spawn"].params["tripod_prob"] > 0.0   # the pike keeps the hop warm
 
 
 def test_spawn_height_table_is_monotone_in_pitch_index():
@@ -211,7 +212,9 @@ def test_partway_spawns_begin_at_the_tripod():
 def test_curricula_are_paced_like_the_roulade():
     cfg = make_microduck_headstand_env_cfg()
     mix = [s["step"] for s in cfg.curriculum["headstand_spawn_mix"].params["param_stages"]]
-    assert mix[1] >= 1500 * 24 and mix[-1] >= 5000 * 24
+    # Warm-started from the kick-up policy (Sep 20 2026): the hop is known, so
+    # standing starts ramp over 2000 iterations instead of 5000.
+    assert mix[1] >= 1000 * 24 and mix[-1] >= 2000 * 24
     for name in ("arrival_damping_weight", "torque_rate_weight"):
         first_nonzero = next(s["step"] for s in cfg.curriculum[name].params["weight_stages"] if s["weight"] != 0.0)
         assert first_nonzero >= 2500 * 24, name

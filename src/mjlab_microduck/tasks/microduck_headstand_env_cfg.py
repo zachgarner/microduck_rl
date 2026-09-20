@@ -58,7 +58,7 @@ ENABLE_SYMMETRY = False
 # ── Variant knobs, env-overridable for parallel runs (scripts/anyscale/variants.py)
 PARK_TAX_WEIGHT      = float(os.environ.get("HEADSTAND_PARK_TAX", -0.5))     # per (1 - inverted_cos), always on
 PROGRESS_WEIGHT      = float(os.environ.get("HEADSTAND_PROGRESS_W", 2.0))    # the swing potential
-STANDING_PROB_STAGE0 = float(os.environ.get("HEADSTAND_STANDING_P0", 0.15))  # share of standing spawns at step 0
+STANDING_PROB_STAGE0 = float(os.environ.get("HEADSTAND_STANDING_P0", 0.30))  # share of standing spawns at step 0
 PARTWAY_PITCH_MIN_DEG = float(os.environ.get("HEADSTAND_PARTWAY_MIN_DEG", 95.0))  # partway spawns start here (the tripod)
 
 # ── Domain randomisation (matched to standup/velocity for sim2real parity) ───
@@ -479,10 +479,13 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
         func=microduck_mdp.reset_headstand_spawn,
         mode="reset",
         params={
+            # Full task (kickup=False), after kick-up run 3 landed the hop from
+            # the pike (31/32, Sep 20 2026): standing starts learn the bow into
+            # the pike, pike starts keep the hop warm, the rest polish.
             "standing_prob":       standing_p0,
-            "partway_prob":        0.30 if kickup else 0.35,
-            "hold_prob":           0.30 if kickup else 0.50,
-            "tripod_prob":         0.40 if kickup else 0.0,
+            "partway_prob":        0.30 if kickup else 0.20,
+            "hold_prob":           0.30 if kickup else 0.15,
+            "tripod_prob":         0.40 if kickup else 0.35,
             "standing_z_min":      0.11,
             "standing_z_max":      0.12,
             "standing_tilt_max":   math.radians(3.0),
@@ -570,10 +573,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False) -
                 {"step": 1500 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.25, "hold_prob": 0.20, "tripod_prob": 0.55}},
                 {"step": 3000 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.65}},
             ] if kickup else [
-                {"step": 0,         "params": {"standing_prob": STANDING_PROB_STAGE0, "partway_prob": 0.35, "hold_prob": 0.50}},
-                {"step": 1500 * 24, "params": {"standing_prob": 0.25, "partway_prob": 0.45, "hold_prob": 0.30}},
-                {"step": 3000 * 24, "params": {"standing_prob": 0.40, "partway_prob": 0.40, "hold_prob": 0.20}},
-                {"step": 5000 * 24, "params": {"standing_prob": 0.55, "partway_prob": 0.30, "hold_prob": 0.15}},
+                {"step": 0,         "params": {"standing_prob": STANDING_PROB_STAGE0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.35}},
+                {"step": 1000 * 24, "params": {"standing_prob": 0.45, "partway_prob": 0.15, "hold_prob": 0.10, "tripod_prob": 0.30}},
+                {"step": 2000 * 24, "params": {"standing_prob": 0.60, "partway_prob": 0.10, "hold_prob": 0.05, "tripod_prob": 0.25}},
             ],
         },
     )
