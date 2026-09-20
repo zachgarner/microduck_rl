@@ -7454,7 +7454,13 @@ _HEADSTAND_REST_TILT_COS = math.cos(math.radians(20.0))
 #     impact fine. AGENTS.md: gate the jackpot, don't tax the speed. A head
 #     contact above _HEADSTAND_SLAM_N at any time marks the episode and a
 #     marked episode never pays the hold.
-_HEADSTAND_SLAM_N = 12.0   # ≈ 1.7× the 7.2 N body weight
+# Env-overridable for parallel variant runs (HEADSTAND_SLAM_N=18 ...).
+_HEADSTAND_SLAM_N = float(os.environ.get("HEADSTAND_SLAM_N", 12.0))   # 12 ≈ 1.7× the 7.2 N body weight
+# Run 2 at iteration 250: every partway spawn was slam-marked by its own 1 cm
+# drop (median 22 N) before the policy had done anything, so partway episodes
+# could never pay the hold. Slams inside the first 0.3 s of an episode are
+# the spawn's, not the policy's, and are not counted.
+_HEADSTAND_SLAM_GRACE_STEPS = 15
 
 
 def _inverted_cos(asset: Entity) -> torch.Tensor:
@@ -7503,7 +7509,8 @@ def _update_headstand(env: ManagerBasedRlEnv, asset: Entity) -> None:
             env._headstand_head_latch = env._headstand_head_latch | (head & _head_top_down(env, asset))
         force = _head_floor_force(env)
         if force is not None:
-            env._headstand_slammed = env._headstand_slammed | (force > _HEADSTAND_SLAM_N)
+            past_grace = env.episode_length_buf > _HEADSTAND_SLAM_GRACE_STEPS
+            env._headstand_slammed = env._headstand_slammed | ((force > _HEADSTAND_SLAM_N) & past_grace)
         env._headstand_last_update_step = step
 
 

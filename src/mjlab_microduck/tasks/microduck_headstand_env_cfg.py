@@ -49,10 +49,16 @@ and curriculum stages stretched to roulade's proven pacing.
 """
 
 import math
+import os
 from copy import deepcopy
 
 # Symmetry — never for an asymmetric trick.
 ENABLE_SYMMETRY = False
+
+# ── Variant knobs, env-overridable for parallel runs (scripts/anyscale/variants.py)
+PARK_TAX_WEIGHT      = float(os.environ.get("HEADSTAND_PARK_TAX", -0.5))     # per (1 - inverted_cos), always on
+PROGRESS_WEIGHT      = float(os.environ.get("HEADSTAND_PROGRESS_W", 2.0))    # the swing potential
+STANDING_PROB_STAGE0 = float(os.environ.get("HEADSTAND_STANDING_P0", 0.15))  # share of standing spawns at step 0
 
 # ── Domain randomisation (matched to standup/velocity for sim2real parity) ───
 ENABLE_COM_RANDOMIZATION             = True
@@ -233,7 +239,7 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
     # strength that transferred (AGENTS.md: compare reward mass, not weights).
     cfg.rewards["headstand_progress"] = RewardTermCfg(
         func=microduck_mdp.headstand_progress,
-        weight=2.0,
+        weight=PROGRESS_WEIGHT,
     )
     cfg.rewards["headstand_composite"] = RewardTermCfg(
         func=microduck_mdp.headstand_composite,
@@ -267,7 +273,7 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
     # headstand 0. Same role as standup's height_stand_l1.
     cfg.rewards["headstand_not_inverted"] = RewardTermCfg(
         func=microduck_mdp.headstand_not_inverted_tax,
-        weight=-0.5,
+        weight=PARK_TAX_WEIGHT,
     )
     # Gates — hard, from step 0, cheap to compute, impossible to farm.
     cfg.rewards["headstand_feet_down"] = RewardTermCfg(
@@ -450,7 +456,7 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
         func=microduck_mdp.reset_headstand_spawn,
         mode="reset",
         params={
-            "standing_prob":       0.15,
+            "standing_prob":       STANDING_PROB_STAGE0,
             "partway_prob":        0.35,
             "hold_prob":           0.50,
             "standing_z_min":      0.11,
@@ -530,7 +536,7 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
         params={
             "event_name": "set_headstand_spawn",
             "param_stages": [
-                {"step": 0,         "params": {"standing_prob": 0.15, "partway_prob": 0.35, "hold_prob": 0.50}},
+                {"step": 0,         "params": {"standing_prob": STANDING_PROB_STAGE0, "partway_prob": 0.35, "hold_prob": 0.50}},
                 {"step": 1500 * 24, "params": {"standing_prob": 0.25, "partway_prob": 0.45, "hold_prob": 0.30}},
                 {"step": 3000 * 24, "params": {"standing_prob": 0.40, "partway_prob": 0.40, "hold_prob": 0.20}},
                 {"step": 5000 * 24, "params": {"standing_prob": 0.55, "partway_prob": 0.30, "hold_prob": 0.15}},
@@ -543,9 +549,9 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
         params={
             "reward_name": "headstand_not_inverted",
             "weight_stages": [
-                {"step": 0,          "weight": -0.5},
-                {"step": 1000 * 24,  "weight": -0.75},
-                {"step": 2000 * 24,  "weight": -1.0},
+                {"step": 0,          "weight": PARK_TAX_WEIGHT},
+                {"step": 1000 * 24,  "weight": PARK_TAX_WEIGHT * 1.5},
+                {"step": 2000 * 24,  "weight": PARK_TAX_WEIGHT * 2.0},
             ],
         },
     )
