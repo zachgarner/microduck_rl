@@ -7665,9 +7665,12 @@ def reset_headstand_spawn(
             torch.randn(len(posed), len(cols), device=env.device) * joint_noise_std
         )
 
-    # Latch: partway and hold spawns are born with the head on the floor, and
-    # nobody has slammed yet.
-    env._headstand_head_latch[env_ids] = is_partway | is_hold
+    # Latch: hold spawns are born with the head top on the floor; partway
+    # spawns only once pitched past the point where the head top is down
+    # (~122°, measured), otherwise they latch when they get there. Nobody
+    # has slammed yet.
+    latched_partway = is_partway & (pitch > math.radians(122.0))
+    env._headstand_head_latch[env_ids] = latched_partway | is_hold
     env._headstand_slammed[env_ids] = False
     env._headstand_prev_inverted[env_ids] = -torch.cos(pitch)
 

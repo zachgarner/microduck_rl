@@ -202,9 +202,9 @@ def test_partway_spawns_start_above_the_floor():
     assert below == 0, f"{below} of 300 partway spawns start inside the floor"
 
 
-def test_partway_spawns_begin_where_the_head_top_points_down():
+def test_partway_spawns_begin_at_the_tripod():
     cfg = make_microduck_headstand_env_cfg()
-    assert cfg.events["set_headstand_spawn"].params["partway_pitch_min"] >= math.radians(125.0)
+    assert math.radians(90.0) <= cfg.events["set_headstand_spawn"].params["partway_pitch_min"] <= math.radians(100.0)
     assert abs(cfg.events["set_headstand_spawn"].params["hold_z"] - HEADSTAND_Z) < 0.005
 
 

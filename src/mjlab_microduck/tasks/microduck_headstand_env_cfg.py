@@ -59,6 +59,7 @@ ENABLE_SYMMETRY = False
 PARK_TAX_WEIGHT      = float(os.environ.get("HEADSTAND_PARK_TAX", -0.5))     # per (1 - inverted_cos), always on
 PROGRESS_WEIGHT      = float(os.environ.get("HEADSTAND_PROGRESS_W", 2.0))    # the swing potential
 STANDING_PROB_STAGE0 = float(os.environ.get("HEADSTAND_STANDING_P0", 0.15))  # share of standing spawns at step 0
+PARTWAY_PITCH_MIN_DEG = float(os.environ.get("HEADSTAND_PARTWAY_MIN_DEG", 95.0))  # partway spawns start here (the tripod)
 
 # ── Domain randomisation (matched to standup/velocity for sim2real parity) ───
 ENABLE_COM_RANDOMIZATION             = True
@@ -462,7 +463,13 @@ def make_microduck_headstand_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg
             "standing_z_min":      0.11,
             "standing_z_max":      0.12,
             "standing_tilt_max":   math.radians(3.0),
-            "partway_pitch_min":   math.radians(125.0),  # head-top axis points down from here
+            # Run 4 (Sep 20 2026): every variant parked in the ~95° tripod and
+            # no episode had ever started between 95° and 125°, so the first
+            # half of the swing had no on-policy data (AGENTS.md reverse-
+            # curriculum rule). Partway now starts AT the tripod. Spawns
+            # below ~122° are born un-latched (the head top is not down yet)
+            # and latch as they rotate.
+            "partway_pitch_min":   math.radians(PARTWAY_PITCH_MIN_DEG),
             "partway_pitch_max":   math.radians(165.0),
             "partway_lerp_range":  (0.4, 1.0),
             "hold_pitch_noise":    math.radians(8.0),
