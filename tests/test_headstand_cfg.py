@@ -237,3 +237,20 @@ def test_run1_lessons_park_tax_always_on_and_slam_gate():
     assert microduck_mdp._HEADSTAND_SLAM_N < 15.0 and microduck_mdp._HEADSTAND_SLAM_N > 7.2
     # a 21 N landing (run 1's median) must cost more than one step of the hold
     assert -cfg.rewards["head_impact"].weight * (21.0 - cfg.rewards["head_impact"].params["threshold"]) > 5.5
+
+
+def test_forward_fold_gate_is_zero_for_a_backward_drop():
+    # Variant A fell backwards onto its head top; the latch/swing/hold gates
+    # must read 0 nose-up and 1 nose-down or vertical.
+    import torch
+    from types import SimpleNamespace
+    def asset_with_pitch(deg):
+        p = math.radians(deg)
+        q = torch.tensor([[math.cos(p / 2), 0.0, math.sin(p / 2), 0.0]])
+        return SimpleNamespace(data=SimpleNamespace(root_link_quat_w=q))
+    g = microduck_mdp._forward_fold_gate
+    assert float(g(asset_with_pitch(0))) == 1.0        # standing
+    assert float(g(asset_with_pitch(100))) == 1.0      # forward fold, nose down
+    assert float(g(asset_with_pitch(180))) == 1.0      # inverted
+    assert float(g(asset_with_pitch(-100))) == 0.0     # fallen on the back
+    assert float(g(asset_with_pitch(-135))) == 0.0

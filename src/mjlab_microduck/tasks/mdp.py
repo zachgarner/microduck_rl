@@ -7463,6 +7463,25 @@ _HEADSTAND_SLAM_N = float(os.environ.get("HEADSTAND_SLAM_N", 12.0))   # 12 ≈ 1
 _HEADSTAND_SLAM_GRACE_STEPS = 15
 
 
+def _nose_up(asset: Entity) -> torch.Tensor:
+    """World-z of the trunk's forward (+x) axis: -1 nose straight down (a
+    forward fold), 0 standing or inverted, +1 nose straight up (fallen on
+    the back). R[2,0] = 2(x z - w y) for quaternion [w, x, y, z]."""
+    q = asset.data.root_link_quat_w
+    return torch.nan_to_num(2.0 * (q[:, 1] * q[:, 3] - q[:, 0] * q[:, 2]), nan=0.0)
+
+
+def _forward_fold_gate(asset: Entity) -> torch.Tensor:
+    """1 while the nose is down or the trunk is vertical, 0 once the nose
+    points up past ~17°. Variant A (Sep 20 2026, run 1vor38bq) dropped
+    BACKWARDS onto the top of its head with the feet out front: the latch,
+    the swing potential and the hold were all blind to direction, and a
+    backward drop is the fastest way to put the head top on the floor. The
+    entry is a forward fold, so everything that pays for arriving is
+    multiplied by this."""
+    return _smoothstep(-_nose_up(asset), -0.3, 0.0)
+
+
 def _inverted_cos(asset: Entity) -> torch.Tensor:
     """-R[2,2] of the trunk: +1 perfect headstand, 0 horizontal, -1 standing."""
     quat = asset.data.root_link_quat_w
@@ -7506,7 +7525,8 @@ def _update_headstand(env: ManagerBasedRlEnv, asset: Entity) -> None:
     if step != env._headstand_last_update_step:
         head = _sensor_any_contact(env, _HEADSTAND_HEAD_SENSOR)
         if head is not None:
-            env._headstand_head_latch = env._headstand_head_latch | (head & _head_top_down(env, asset))
+            forward = _forward_fold_gate(asset) > 0.5
+            env._headstand_head_latch = env._headstand_head_latch | (head & _head_top_down(env, asset) & forward)
         force = _head_floor_force(env)
         if force is not None:
             past_grace = env.episode_length_buf > _HEADSTAND_SLAM_GRACE_STEPS
@@ -7681,7 +7701,8 @@ def headstand_progress(
         delta = torch.where(supported, delta, torch.clamp(delta, max=0.0))
     y_z = torch.nan_to_num(_lateral_axis_z(asset.data.root_link_quat_w), nan=1.0).abs()
     flat = _smoothstep(-y_z, -_FLAT_ZERO, -_FLAT_FULL)
-    delta = torch.where(delta > 0, delta * flat, delta)
+    # Rising pays only in a flat, FORWARD fold; a backward drop earns nothing.
+    delta = torch.where(delta > 0, delta * flat * _forward_fold_gate(asset), delta)
     return delta * 5.0
 
 
@@ -7713,7 +7734,7 @@ def headstand_composite(
     inverted = torch.exp(-(1.0 - inv) / (inverted_std * inverted_std))  # 1-cos ≈ tilt²/2
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
-    return height * inverted * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env)
+    return height * inverted * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
 
 
 def headstand_inverted_sharp(
@@ -7737,7 +7758,7 @@ def headstand_inverted_sharp(
     sharp = torch.exp(-excess / (inverted_std * inverted_std))
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero)
-    return sharp * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env)
+    return sharp * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
 
 
 def headstand_not_inverted_tax(
