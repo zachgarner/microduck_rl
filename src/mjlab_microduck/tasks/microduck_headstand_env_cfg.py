@@ -172,7 +172,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
     # collision geoms (servo housing etc.) that sit 2–8 mm below the sole when
     # the ankle is pitched, and a sole-only sensor read "feet off" while the
     # housing carried the tripod (review item 3).
-    if style == "tucked":
+    if style == "fold":
+        overrides, hold_z, knee_full, knee_zero = HEADSTAND_OVERRIDES, HEADSTAND_Z, 0.3, 0.6   # unused by the fold rewards
+    elif style == "tucked":
         overrides, hold_z, knee_full, knee_zero = HEADSTAND_TUCKED_OVERRIDES, HEADSTAND_TUCKED_Z, 1.0, 1.3
     elif style == "straight":
         overrides, hold_z, knee_full, knee_zero = HEADSTAND_STRAIGHT_OVERRIDES, HEADSTAND_Z, 0.3, 0.6
@@ -356,6 +358,36 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         params={"inverted_full": 0.94, "inverted_zero": 0.71},
     )
 
+    if style == "fold":
+        # The fold policy: standing → resting pike. Drop every headstand hold
+        # term and pay the pike instead; keep the gates that price slams,
+        # jumps and flops. Terminates on a flop like the headstand.
+        pike_q = microduck_mdp._HEADSTAND_PIKE_QPOS
+        pike_pitch = float(microduck_mdp._HEADSTAND_TRIPOD_PITCH)
+        pike_overrides = {i: float(pike_q[7 + i]) for i in range(14)}
+        for name in ("headstand_progress", "headstand_composite", "headstand_inverted_sharp",
+                     "headstand_not_inverted", "headstand_feet_down", "headstand_arrival_damping"):
+            cfg.rewards.pop(name, None)
+        cfg.rewards["fold_progress"] = RewardTermCfg(
+            func=microduck_mdp.fold_progress, weight=2.0, params={"target_pitch": pike_pitch},
+        )
+        cfg.rewards["fold_composite"] = RewardTermCfg(
+            func=microduck_mdp.fold_composite, weight=4.0,
+            params={
+                "target_pitch": pike_pitch, "pitch_std": 0.25,            # ≈ 14°
+                "target_height": float(pike_q[2]), "height_std": 0.03,
+                "pose_std": 0.45, "target_overrides": pike_overrides,
+            },
+        )
+        cfg.rewards["fold_overshoot"] = RewardTermCfg(
+            func=microduck_mdp.fold_overshoot_penalty, weight=-1.0, params={"target_pitch": pike_pitch},
+        )
+        # Standing-still tax: every step short of the pike angle costs a little
+        # (standup's height-L1 lesson), so standing there is not free.
+        cfg.rewards["fold_not_folded"] = RewardTermCfg(
+            func=microduck_mdp.headstand_not_inverted_tax, weight=-0.25,
+        )
+
     # ── Sim2real regularisers (velocity's set; motion-blockers kept ≈ 0) ─────
     cfg.rewards["action_rate_l2"] = RewardTermCfg(func=mdp.action_rate_l2, weight=-0.05)
     cfg.rewards["joint_torque_rate_l2"] = RewardTermCfg(
@@ -485,11 +517,15 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
     cfg.events["reset_action_history"] = EventTermCfg(
         func=microduck_mdp.reset_action_history, mode="reset",
     )
+    if style == "fold":
+        cfg.events["reset_fold_progress"] = EventTermCfg(
+            func=microduck_mdp.reset_fold_progress, mode="reset",
+        )
     cfg.events["foot_friction"].params["asset_cfg"].geom_names = foot_frictions_geom_names
     cfg.events["foot_friction"].params["ranges"] = (0.7, 1.3)
 
     # Spawn mix — stage 0 of the reverse curriculum below: mostly the hold.
-    standing_p0 = 0.0 if kickup else STANDING_PROB_STAGE0
+    standing_p0 = 0.0 if kickup else (0.7 if style == "fold" else STANDING_PROB_STAGE0)
     # Kick-up: 40% of episodes start in the RESTING tripod (measured settled
     # state, head and feet on the floor from step 0), 30% partway through the
     # swing, 30% in the hold.
@@ -503,9 +539,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             # the pike (31/32, Sep 20 2026): standing starts learn the bow into
             # the pike, pike starts keep the hop warm, the rest polish.
             "standing_prob":       standing_p0,
-            "partway_prob":        0.30 if kickup else 0.20,
-            "hold_prob":           0.30 if kickup else 0.15,
-            "tripod_prob":         0.40 if kickup else 0.35,
+            "partway_prob":        0.30 if kickup else (0.0 if style == "fold" else 0.20),
+            "hold_prob":           0.30 if kickup else (0.0 if style == "fold" else 0.15),
+            "tripod_prob":         0.40 if kickup else (0.30 if style == "fold" else 0.35),
             "standing_z_min":      0.11,
             "standing_z_max":      0.12,
             "standing_tilt_max":   math.radians(3.0),
@@ -593,6 +629,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
                 {"step": 1500 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.25, "hold_prob": 0.20, "tripod_prob": 0.55}},
                 {"step": 3000 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.65}},
             ] if kickup else [
+                {"step": 0,         "params": {"standing_prob": 0.7, "partway_prob": 0.0, "hold_prob": 0.0, "tripod_prob": 0.3}},
+                {"step": 1000 * 24, "params": {"standing_prob": 0.8, "partway_prob": 0.0, "hold_prob": 0.0, "tripod_prob": 0.2}},
+            ] if style == "fold" else [
                 {"step": 0,         "params": {"standing_prob": STANDING_PROB_STAGE0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.35}},
                 {"step": 1000 * 24, "params": {"standing_prob": 0.45, "partway_prob": 0.15, "hold_prob": 0.10, "tripod_prob": 0.30}},
                 {"step": 2000 * 24, "params": {"standing_prob": 0.60, "partway_prob": 0.10, "hold_prob": 0.05, "tripod_prob": 0.25}},
@@ -600,28 +639,29 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         },
     )
     # The park tax is on from step 0 and tightens once hold spawns balance.
-    cfg.curriculum["not_inverted_weight"] = CurriculumTermCfg(
-        func=microduck_mdp.reward_weight,
-        params={
-            "reward_name": "headstand_not_inverted",
-            "weight_stages": [
-                {"step": 0,          "weight": PARK_TAX_WEIGHT},
-                {"step": 1000 * 24,  "weight": PARK_TAX_WEIGHT * 1.5},
-                {"step": 2000 * 24,  "weight": PARK_TAX_WEIGHT * 2.0},
-            ],
-        },
-    )
-    cfg.curriculum["gentle_weight"] = CurriculumTermCfg(
-        func=microduck_mdp.reward_weight,
-        params={
-            "reward_name": "gentle",
-            "weight_stages": [
-                {"step": 0,          "weight": 0.002},
-                {"step": 1500 * 24,  "weight": 0.0035},
-                {"step": 3000 * 24,  "weight": 0.005},
-            ],
-        },
-    )
+    if style != "fold":
+        cfg.curriculum["not_inverted_weight"] = CurriculumTermCfg(
+                func=microduck_mdp.reward_weight,
+                params={
+                    "reward_name": "headstand_not_inverted",
+                    "weight_stages": [
+                        {"step": 0,          "weight": PARK_TAX_WEIGHT},
+                        {"step": 1000 * 24,  "weight": PARK_TAX_WEIGHT * 1.5},
+                        {"step": 2000 * 24,  "weight": PARK_TAX_WEIGHT * 2.0},
+                    ],
+                },
+            )
+        cfg.curriculum["gentle_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": "gentle",
+                "weight_stages": [
+                    {"step": 0,          "weight": 0.002},
+                    {"step": 1500 * 24,  "weight": 0.0035},
+                    {"step": 3000 * 24,  "weight": 0.005},
+                ],
+            },
+        )
     if ENABLE_COM_RANDOMIZATION:
         cfg.curriculum["com_range"] = CurriculumTermCfg(
             func=microduck_mdp.com_range_curriculum,
@@ -664,27 +704,28 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             ],
         },
     )
-    cfg.curriculum["arrival_damping_weight"] = CurriculumTermCfg(
-        func=microduck_mdp.reward_weight,
-        params={
-            "reward_name": "headstand_arrival_damping",
-            "weight_stages": [
-                {"step": 0,          "weight": 0.0},
-                {"step": 2500 * 24,  "weight": -0.025},
-                {"step": 3500 * 24,  "weight": -0.05},
-            ],
-        },
-    )
-    cfg.curriculum["torque_rate_weight"] = CurriculumTermCfg(
-        func=microduck_mdp.reward_weight,
-        params={
-            "reward_name": "joint_torque_rate_l2",
-            "weight_stages": [
-                {"step": 0,          "weight": 0.0},
-                {"step": 2500 * 24,  "weight": -1e-3},
-            ],
-        },
-    )
+    if style != "fold":
+        cfg.curriculum["arrival_damping_weight"] = CurriculumTermCfg(
+                func=microduck_mdp.reward_weight,
+                params={
+                    "reward_name": "headstand_arrival_damping",
+                    "weight_stages": [
+                        {"step": 0,          "weight": 0.0},
+                        {"step": 2500 * 24,  "weight": -0.025},
+                        {"step": 3500 * 24,  "weight": -0.05},
+                    ],
+                },
+            )
+        cfg.curriculum["torque_rate_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": "joint_torque_rate_l2",
+                "weight_stages": [
+                    {"step": 0,          "weight": 0.0},
+                    {"step": 2500 * 24,  "weight": -1e-3},
+                ],
+            },
+        )
 
     return cfg
 
@@ -742,6 +783,7 @@ def _two_leg_runner_cfg(name: str) -> RslRlOnPolicyRunnerCfg:
 
 
 MicroduckHeadstandKickupTuckedRlCfg = _two_leg_runner_cfg("microduck_headstand_kickup_tucked")
+MicroduckHeadstandFoldRlCfg = _two_leg_runner_cfg("microduck_headstand_fold")   # the bow is symmetric too
 MicroduckHeadstandKickupStraightRlCfg = _two_leg_runner_cfg("microduck_headstand_kickup_straight")
 
 # The kick-up policy: same network, its own experiment so checkpoints and

@@ -81,6 +81,7 @@ from .microduck_headstand_env_cfg import (
     MicroduckHeadstandKickupRlCfg,
     MicroduckHeadstandKickupTuckedRlCfg,
     MicroduckHeadstandKickupStraightRlCfg,
+    MicroduckHeadstandFoldRlCfg,
 )
 from .backlash import make_backlash_variant
 
@@ -266,6 +267,15 @@ register_mjlab_task(
     env_cfg=make_microduck_headstand_env_cfg(kickup=True, style="tucked"),
     play_env_cfg=make_microduck_headstand_env_cfg(play=True, kickup=True, style="tucked"),
     rl_cfg=MicroduckHeadstandKickupTuckedRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+# Fold: standing → the resting pike, the kick-up's start. Chained before the
+# kick-up at deployment, like sit → stand → walk.
+register_mjlab_task(
+    task_id="Mjlab-HeadstandFold-Flat-MicroDuck",
+    env_cfg=make_microduck_headstand_env_cfg(style="fold"),
+    play_env_cfg=make_microduck_headstand_env_cfg(play=True, style="fold"),
+    rl_cfg=MicroduckHeadstandFoldRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 register_mjlab_task(

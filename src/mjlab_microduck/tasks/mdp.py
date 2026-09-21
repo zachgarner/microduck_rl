@@ -7750,6 +7750,103 @@ def headstand_progress(
     return gain * 5.0
 
 
+# ── Fold: standing → resting pike (the kick-up's start) ──────────────────────
+# Zach, Sep 20 2026: "It shouldnt be hard to do this from standing now!" The
+# warm-started full task fell instead of bowing (0/32 at 500, head slammed at
+# 16-44 N). This is the fold on its own, Pollen's standup shape with the pike
+# as the target: pose Gaussian × trunk-angle Gaussian × height Gaussian, paid
+# only with the head and BOTH feet on the floor, plus a potential on the trunk
+# angle so the bow itself pays on the way down.
+
+def _pike_gate(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """1 with the head and both feet on the floor and nothing else."""
+    head = _sensor_any_contact(env, _HEADSTAND_HEAD_SENSOR)
+    other = _sensor_any_contact(env, _HEADSTAND_OTHER_SENSOR)
+    feet_found = env.scene.sensors[_HEADSTAND_FEET_SENSOR].data.found if _HEADSTAND_FEET_SENSOR in env.scene.sensors else None
+    gate = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+    if head is not None:
+        gate = gate & head
+    if other is not None:
+        gate = gate & ~other
+    if feet_found is not None:
+        both = (feet_found.view(feet_found.shape[0], -1) > 0)
+        gate = gate & (both.sum(dim=-1) >= 2) if both.shape[-1] >= 2 else gate & both.any(dim=-1)
+    return gate.float()
+
+
+def _trunk_pitch(asset: Entity) -> torch.Tensor:
+    """Trunk angle from standing in radians, 0 standing, π/2 horizontal nose-down, π inverted."""
+    q = asset.data.root_link_quat_w
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    r20 = 2.0 * (x * z - w * y); r22 = 1.0 - 2.0 * (x * x + y * y)
+    return torch.nan_to_num(torch.atan2(-r20, r22), nan=0.0)
+
+
+def fold_composite(
+    env: ManagerBasedRlEnv,
+    target_pitch: float,
+    pitch_std: float,
+    target_height: float,
+    height_std: float,
+    pose_std: float,
+    target_overrides: dict,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """The pike, held: trunk-angle Gaussian × height Gaussian × pose Gaussian,
+    paid only with the head and both feet down (a fall onto the face or the
+    back pays nothing) after a gentle landing."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_headstand(env, asset)
+    pitch = _trunk_pitch(asset)
+    angle = torch.exp(-((pitch - target_pitch) / pitch_std) ** 2)
+    z = torch.nan_to_num(asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0)
+    height = torch.exp(-((z - target_height) / height_std) ** 2)
+    pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
+    return angle * height * pose * _pike_gate(env) * (~env._headstand_slammed).float()
+
+
+def fold_progress(
+    env: ManagerBasedRlEnv,
+    target_pitch: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Pay each new furthest trunk angle up to the pike angle, never charge
+    coming back, only while supported and nose-down. Same frontier rule as
+    headstand_progress, capped at the pike so overshooting into a fall earns
+    nothing extra."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_headstand(env, asset)
+    pitch = torch.clamp(_trunk_pitch(asset), max=target_pitch)
+    if not hasattr(env, "_fold_max_pitch"):
+        env._fold_max_pitch = torch.zeros(env.num_envs, device=env.device)
+    supported = _sensor_any_contact(env, _HEADSTAND_SUPPORT_SENSOR)
+    counts = _forward_fold_gate(asset)
+    if supported is not None:
+        counts = counts * supported.float()
+    gain = torch.clamp(pitch - env._fold_max_pitch, min=0.0) * counts
+    env._fold_max_pitch = env._fold_max_pitch + gain
+    return gain * 2.0
+
+
+def reset_fold_progress(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
+    if env_ids is None or len(env_ids) == 0:
+        return
+    if not hasattr(env, "_fold_max_pitch"):
+        env._fold_max_pitch = torch.zeros(env.num_envs, device=env.device)
+    env._fold_max_pitch[env_ids.to(env.device, dtype=torch.long)] = 0.0
+
+
+def fold_overshoot_penalty(
+    env: ManagerBasedRlEnv,
+    target_pitch: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Trunk past the pike angle (toward inverted) costs: the fold stops at the
+    pike; the kick-up is another policy's job. Positive; negative weight."""
+    asset: Entity = env.scene[asset_cfg.name]
+    return torch.clamp(_trunk_pitch(asset) - target_pitch, min=0.0)
+
+
 def headstand_flopped(
     env: ManagerBasedRlEnv,
     grace_steps: int = 25,
