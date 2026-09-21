@@ -7539,6 +7539,8 @@ def _head_floor_force(env: ManagerBasedRlEnv) -> torch.Tensor | None:
     if _HEADSTAND_HEAD_SENSOR not in env.scene.sensors:
         return None
     f = env.scene.sensors[_HEADSTAND_HEAD_SENSOR].data.force
+    if f is None:   # a found-only sensor (the roulade env's head sensor)
+        return None
     return torch.nan_to_num(f.view(f.shape[0], -1, 3).norm(dim=-1).amax(dim=-1), nan=0.0)
 
 
@@ -7864,7 +7866,13 @@ def fold_progress_down(
     extra (the fold_composite then pays the rest in the pike)."""
     asset: Entity = env.scene[asset_cfg.name]
     _update_headstand(env, asset)
-    pitch = torch.clamp(_trunk_pitch(asset), min=target_pitch)
+    pitch = _trunk_pitch(asset)
+    # atan2 wraps past 180°: a BACKWARD fall reads as a negative pitch, which
+    # clamp() would turn into "arrived at the pike" and pay the whole frontier
+    # at once (split-exit run 1: 32/32 fell backward). Unwrap: past inverted
+    # the angle keeps growing (181..359), so falling back never lowers it.
+    pitch = torch.where(pitch < 0, pitch + 2 * math.pi, pitch)
+    pitch = torch.clamp(pitch, min=target_pitch)
     if not hasattr(env, "_fold_min_pitch"):
         env._fold_min_pitch = torch.full((env.num_envs,), math.pi, device=env.device)
     supported = _sensor_any_contact(env, _HEADSTAND_SUPPORT_SENSOR)
@@ -8031,6 +8039,23 @@ def headstand_airborne_penalty(
     if supported is None:
         return torch.zeros(env.num_envs, device=env.device)
     return (~supported).float()
+
+
+def headstand_ahead_of_ramp_penalty(
+    env: ManagerBasedRlEnv,
+    slack: float = 0.15,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """How far the trunk's inversion is AHEAD of the ramped setpoint, beyond
+    `slack`. Slow-entry run 1: with the ramp only deferring pay, the policy
+    still snapped up in 0.28 s and waited. Being ahead now costs every step
+    until the ramp catches up, so a slow controlled rise is the argmax
+    (Pollen's sit-stand lesson, with teeth). Zero with the ramp off. Positive;
+    negative weight."""
+    if _HEADSTAND_RAMP_S <= 0.0:
+        return torch.zeros(env.num_envs, device=env.device)
+    asset: Entity = env.scene[asset_cfg.name]
+    return torch.clamp(_inverted_cos(asset) - _headstand_setpoint(env) - slack, min=0.0)
 
 
 def headstand_arrival_damping(

@@ -346,3 +346,14 @@ def test_split_exit_spawns_in_the_hold_and_targets_the_pike():
     assert cfg.rewards["fold_progress"].func is microduck_mdp.fold_progress_down
     assert "fold_composite" in cfg.rewards and "fold_overshoot" not in cfg.rewards
     assert "flopped" not in cfg.terminations
+
+
+def test_split_exit_frontier_ignores_a_backward_fall():
+    import torch
+    from types import SimpleNamespace
+    # Trunk quaternions: inverted (pitch 180) then fallen backward (pitch 250 = -110 wrapped).
+    def q(deg):
+        p = math.radians(deg); return [math.cos(p / 2), 0.0, math.sin(p / 2), 0.0]
+    pitch = microduck_mdp._trunk_pitch(SimpleNamespace(data=SimpleNamespace(root_link_quat_w=torch.tensor([q(180), q(250)]))))
+    unwrapped = torch.where(pitch < 0, pitch + 2 * math.pi, pitch)
+    assert unwrapped[1] > unwrapped[0] > math.radians(170)   # backward = the angle keeps growing, never "down to the pike"

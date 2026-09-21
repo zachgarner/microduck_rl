@@ -356,6 +356,12 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         weight=-0.1,
         params={"omega_max": 6.0},
     )
+    # Slow entry: being ahead of the ramped setpoint costs (0 with the ramp off).
+    cfg.rewards["headstand_ahead_of_ramp"] = RewardTermCfg(
+        func=microduck_mdp.headstand_ahead_of_ramp_penalty,
+        weight=-3.0,
+        params={"slack": 0.15},
+    )
     # Arrival damper — wobble around the balance point only. Starts at 0,
     # curriculum below (standup: timing, not magnitude, protects discovery).
     cfg.rewards["headstand_arrival_damping"] = RewardTermCfg(
