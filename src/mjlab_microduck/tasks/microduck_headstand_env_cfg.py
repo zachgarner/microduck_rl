@@ -61,6 +61,7 @@ PROGRESS_WEIGHT      = float(os.environ.get("HEADSTAND_PROGRESS_W", 2.0))    # t
 STANDING_PROB_STAGE0 = float(os.environ.get("HEADSTAND_STANDING_P0", 0.30))  # share of standing spawns at step 0
 PARTWAY_PITCH_MIN_DEG = float(os.environ.get("HEADSTAND_PARTWAY_MIN_DEG", 95.0))  # partway spawns start here (the tripod)
 BANK_PROB = float(os.environ.get("HEADSTAND_BANK_PROB", 0.0))   # kick-up spawns drawn from the fold's real handover pikes
+SWITCH_RAMP_S = float(os.environ.get("HEADSTAND_SWITCH_RAMP_S", 1.0))   # split switch: seconds the pose target takes to mirror (Zach, Sep 21: "would look better faster")
 # Polish schedule, in iterations: when the smoothness taxes start. Default keeps
 # Pollen's late timing (skill first); a continuation of a run that already has
 # the skill sets HEADSTAND_POLISH_AT=0 (Zach on kick-up run 3: the 500
@@ -527,7 +528,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         # every 2-4 s; every episode starts at 0 to match the hold spawn.
         command.resampling_time_range = (2.0, 4.0)
         cfg.commands["twist"] = microduck_mdp.SplitSwitchCommandCfg(
-            **{**vars(command), "sit_prob": 0.6, "ramp_s": 1.0, "sit_z": 0.0, "stand_z": 1.0}
+            **{**vars(command), "sit_prob": 0.6, "ramp_s": SWITCH_RAMP_S, "sit_z": 0.0, "stand_z": 1.0}
         )
     else:
         cfg.commands["twist"] = microduck_mdp.VelocityCommandCommandOnlyCfg(**vars(command))
