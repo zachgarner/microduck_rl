@@ -374,8 +374,13 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         for name in ("headstand_progress", "headstand_composite", "headstand_inverted_sharp",
                      "headstand_not_inverted", "headstand_feet_down", "headstand_arrival_damping"):
             cfg.rewards.pop(name, None)
+        # Fold run 1 (Sep 20 2026) fell backward 28/32 at 500: the always-on tax
+        # plus a flop TERMINATION made an early fall the cheapest episode.
+        # Now: standing costs nothing, a flop does not end the episode (it is
+        # billed lightly, below), and the way down pays ~7 once (frontier, 76°)
+        # then 4/step in the pike. Forward is the only thing that pays.
         cfg.rewards["fold_progress"] = RewardTermCfg(
-            func=microduck_mdp.fold_progress, weight=2.0, params={"target_pitch": pike_pitch},
+            func=microduck_mdp.fold_progress, weight=5.0, params={"target_pitch": pike_pitch},
         )
         cfg.rewards["fold_composite"] = RewardTermCfg(
             func=microduck_mdp.fold_composite, weight=4.0,
@@ -388,11 +393,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         cfg.rewards["fold_overshoot"] = RewardTermCfg(
             func=microduck_mdp.fold_overshoot_penalty, weight=-1.0, params={"target_pitch": pike_pitch},
         )
-        # Standing-still tax: every step short of the pike angle costs a little
-        # (standup's height-L1 lesson), so standing there is not free.
-        cfg.rewards["fold_not_folded"] = RewardTermCfg(
-            func=microduck_mdp.headstand_not_inverted_tax, weight=-0.25,
-        )
+        cfg.rewards["headstand_other_contact"].weight = -0.3   # a flop is billed, not terminated (below)
 
     # ── Sim2real regularisers (velocity's set; motion-blockers kept ≈ 0) ─────
     cfg.rewards["action_rate_l2"] = RewardTermCfg(func=mdp.action_rate_l2, weight=-0.05)
@@ -510,11 +511,12 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         time_out=False,
         params={"sensor_names": (feet_ground_cfg.name,)},
     )
-    cfg.terminations["flopped"] = TerminationTermCfg(
-        func=microduck_mdp.headstand_flopped,
-        time_out=False,
-        params={"grace_steps": 25},
-    )
+    if style != "fold":
+        cfg.terminations["flopped"] = TerminationTermCfg(
+            func=microduck_mdp.headstand_flopped,
+            time_out=False,
+            params={"grace_steps": 25},
+        )
 
     # ── Events ────────────────────────────────────────────────────────────────
     cfg.events["expand_bam_friction_fields"] = EventTermCfg(

@@ -303,3 +303,10 @@ def test_two_leg_styles_are_symmetric_and_target_legs_together():
     assert abs(HEADSTAND_TUCKED_OVERRIDES[3]) >= 1.0 and HEADSTAND_STRAIGHT_OVERRIDES[3] == 0.0
     from mjlab_microduck.tasks.microduck_headstand_env_cfg import MicroduckHeadstandKickupRlCfg
     assert MicroduckHeadstandKickupRlCfg.algorithm.symmetry_cfg is None   # the split stays asymmetric
+
+
+def test_fold_has_no_standing_tax_and_no_flop_termination():
+    cfg = make_microduck_headstand_env_cfg(style="fold")
+    assert "fold_not_folded" not in cfg.rewards and "flopped" not in cfg.terminations
+    assert cfg.rewards["fold_progress"].weight >= 5.0 and cfg.rewards["fold_composite"].weight > 0
+    assert cfg.rewards["headstand_other_contact"].weight < 0
