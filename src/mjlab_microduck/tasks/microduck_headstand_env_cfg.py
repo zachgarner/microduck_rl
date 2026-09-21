@@ -351,10 +351,14 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
     )
     # Whip tax above the measured natural tumble band (roulade run-4: p90
     # transit 5.5 rad/s; a swing of ~45° has no business above 6).
+    # Slow-entry runs set HEADSTAND_OMEGA_MAX=1.5 (rad/s) and a heavier weight:
+    # the 0.25 s snap runs at ~7 rad/s and pays hundreds, a 2 s entry under
+    # 1 rad/s pays nothing. Zach: "a really polished, controlled, slow moving
+    # entry". The ramp alone only deferred pay and did not slow the snap.
     cfg.rewards["headstand_overspeed"] = RewardTermCfg(
         func=microduck_mdp.roulade_overspeed_penalty,
-        weight=-0.1,
-        params={"omega_max": 6.0},
+        weight=float(os.environ.get("HEADSTAND_OVERSPEED_W", -0.1)),
+        params={"omega_max": float(os.environ.get("HEADSTAND_OMEGA_MAX", 6.0))},
     )
     # Slow entry: being ahead of the ramped setpoint costs (0 with the ramp off).
     cfg.rewards["headstand_ahead_of_ramp"] = RewardTermCfg(
