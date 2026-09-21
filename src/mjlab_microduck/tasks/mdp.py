@@ -7473,6 +7473,13 @@ _HEADSTAND_SLAM_N = float(os.environ.get("HEADSTAND_SLAM_N", 12.0))   # 12 ≈ 1
 # the spawn's, not the policy's, and are not counted.
 _HEADSTAND_SLAM_GRACE_STEPS = 15
 
+# Slow, controlled entry (Zach, Sep 20 2026 night: "a really polished,
+# controlled, slow moving entry"). Pollen's sit-stand lesson: a moving
+# SETPOINT ramps from the spawn's inversion to full inversion over RAMP_S
+# seconds and the hold rewards track the ramp, so arriving ahead of it pays
+# nothing and slow is the argmax. 0 disables (the 0.2 s snap entries).
+_HEADSTAND_RAMP_S = float(os.environ.get("HEADSTAND_RAMP_S", 0.0))
+
 
 def _nose_up(asset: Entity) -> torch.Tensor:
     """World-z of the trunk's forward (+x) axis: -1 nose straight down (a
@@ -7511,7 +7518,20 @@ def _headstand_state(env: ManagerBasedRlEnv) -> None:
         env._headstand_slammed = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
         env._headstand_prev_inverted = torch.full((env.num_envs,), -1.0, device=env.device)
         env._headstand_max_inverted = torch.full((env.num_envs,), -1.0, device=env.device)
+        env._headstand_spawn_inverted = torch.full((env.num_envs,), -1.0, device=env.device)
         env._headstand_last_update_step = -1
+
+
+def _headstand_setpoint(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """The inversion the policy is supposed to be at right now: the spawn's
+    inversion ramped to 1.0 over _HEADSTAND_RAMP_S. With the ramp off it is
+    1.0 from step 0 (the old snap-entry behaviour)."""
+    if _HEADSTAND_RAMP_S <= 0.0:
+        return torch.ones(env.num_envs, device=env.device)
+    t = env.episode_length_buf.float() * env.step_dt
+    frac = torch.clamp(t / _HEADSTAND_RAMP_S, 0.0, 1.0)
+    start = env._headstand_spawn_inverted
+    return start + frac * (1.0 - start)
 
 
 def _head_floor_force(env: ManagerBasedRlEnv) -> torch.Tensor | None:
@@ -7718,6 +7738,7 @@ def reset_headstand_spawn(
     env._headstand_slammed[env_ids] = False
     env._headstand_prev_inverted[env_ids] = -torch.cos(pitch)
     env._headstand_max_inverted[env_ids] = -torch.cos(pitch)
+    env._headstand_spawn_inverted[env_ids] = -torch.cos(pitch)
 
 
 def headstand_progress(
@@ -7744,7 +7765,10 @@ def headstand_progress(
     counts = _smoothstep(-y_z, -_FLAT_ZERO, -_FLAT_FULL) * _forward_fold_gate(asset)
     if supported is not None:
         counts = counts * supported.float()
-    gain = torch.clamp(inv - env._headstand_max_inverted, min=0.0) * counts
+    # With the ramp on, progress beyond the setpoint is not paid (yet): the
+    # frontier can only advance as fast as the ramp lets it.
+    capped = torch.minimum(inv, _headstand_setpoint(env))
+    gain = torch.clamp(capped - env._headstand_max_inverted, min=0.0) * counts
     env._headstand_max_inverted = torch.maximum(env._headstand_max_inverted, env._headstand_max_inverted + gain)
     env._headstand_prev_inverted = inv
     return gain * 5.0
@@ -7888,7 +7912,10 @@ def headstand_composite(
     z = torch.nan_to_num(asset.data.root_link_pos_w[:, 2] - env.scene.terrain.env_origins[:, 2], nan=0.0)
     height = torch.exp(-((z - target_height) / height_std) ** 2)
     inv = _inverted_cos(asset)
-    inverted = torch.exp(-(1.0 - inv) / (inverted_std * inverted_std))  # 1-cos ≈ tilt²/2
+    setpoint = _headstand_setpoint(env)
+    # Track the moving setpoint (ahead of it scores ~0); once the ramp has
+    # arrived this is the plain inverted Gaussian.
+    inverted = torch.exp(-torch.abs(setpoint - inv) / (inverted_std * inverted_std))
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero, style)
     return height * inverted * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
@@ -7914,9 +7941,10 @@ def headstand_inverted_sharp(
     inv = _inverted_cos(asset)
     excess = torch.clamp((1.0 - inv) - (1.0 - _HEADSTAND_REST_TILT_COS), min=0.0)
     sharp = torch.exp(-excess / (inverted_std * inverted_std))
+    arrived = (_headstand_setpoint(env) >= 0.999).float()   # the ramp is there; no early jackpot
     pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero, style)
-    return sharp * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
+    return sharp * arrived * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
 
 
 def headstand_not_inverted_tax(

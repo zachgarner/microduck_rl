@@ -277,7 +277,7 @@ def test_flop_terminates_and_swing_pays_the_frontier():
     assert cfg.rewards["headstand_other_contact"].weight > -0.5  # a one-off, not a per-step bill
     import inspect
     src = inspect.getsource(microduck_mdp.headstand_progress)
-    assert "_headstand_max_inverted" in src and "clamp(inv - env._headstand_max_inverted, min=0.0)" in src
+    assert "_headstand_max_inverted" in src and "clamp(capped - env._headstand_max_inverted, min=0.0)" in src
 
 
 def test_kickup_spawns_in_the_pike():
@@ -310,3 +310,19 @@ def test_fold_has_no_standing_tax_and_no_flop_termination():
     assert "fold_not_folded" not in cfg.rewards and "flopped" not in cfg.terminations
     assert cfg.rewards["fold_progress"].weight >= 5.0 and cfg.rewards["fold_composite"].weight > 0
     assert cfg.rewards["headstand_other_contact"].weight < 0
+
+
+def test_ramp_setpoint_starts_at_the_spawn_and_arrives_at_one():
+    import torch
+    from types import SimpleNamespace
+    import importlib
+    microduck_mdp._HEADSTAND_RAMP_S = 2.0
+    env = SimpleNamespace(num_envs=3, device="cpu", step_dt=0.02,
+                          episode_length_buf=torch.tensor([0, 50, 200]),
+                          _headstand_spawn_inverted=torch.tensor([-0.24, -0.24, -0.24]))
+    sp = microduck_mdp._headstand_setpoint(env)
+    assert abs(float(sp[0]) + 0.24) < 1e-6          # at t=0 the setpoint is the pike's inversion
+    assert -0.24 < float(sp[1]) < 1.0                # halfway through the ramp
+    assert abs(float(sp[2]) - 1.0) < 1e-6            # after 2 s it has arrived
+    microduck_mdp._HEADSTAND_RAMP_S = 0.0
+    assert torch.allclose(microduck_mdp._headstand_setpoint(env), torch.ones(3))
