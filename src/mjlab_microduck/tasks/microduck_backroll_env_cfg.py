@@ -35,19 +35,28 @@ from mjlab.rl import RslRlOnPolicyRunnerCfg
 def make_microduck_backroll_env_cfg(play: bool = False, style: str = "straight") -> ManagerBasedRlEnvCfg:
     cfg = make_microduck_roulade_env_cfg(play=play)
     overrides = HEADSTAND_STRAIGHT_OVERRIDES if style == "straight" else HEADSTAND_OVERRIDES
+    # Same collision model as every other headstand policy (run 1 trained on the
+    # roll's feet-and-shell model and lost 6 of 15 in the chained routine that
+    # runs on allcollisions); same solver budget as the headstand tasks.
+    from mjlab_microduck.robot.microduck_constants import MICRODUCK_ALLCOLLISIONS_ROBOT_CFG
+    cfg.scene.entities = {"robot": MICRODUCK_ALLCOLLISIONS_ROBOT_CFG}
+    cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 200)
+    cfg.sim.mujoco.iterations = 30
+    cfg.sim.mujoco.ls_iterations = 50
     spawn = cfg.events["set_roulade_state"].params
     spawn.update(
         standing_prob=0.0,
         midroll_prob=1.0,
-        midroll_pitch_min=math.radians(176.0),
-        midroll_pitch_max=math.radians(184.0),
+        # Wide enough to cover what the hold policy actually hands over.
+        midroll_pitch_min=math.radians(165.0),
+        midroll_pitch_max=math.radians(190.0),
         # trunk_base rests at HEADSTAND_Z in the hold; spawn a hair above.
         midroll_z_min=HEADSTAND_Z + 0.002,
         midroll_z_max=HEADSTAND_Z + 0.006,
-        midroll_omega_range=(0.0, 0.0),        # from a held headstand, no momentum
+        midroll_omega_range=(0.0, 1.0),        # a held headstand wobbles a little
         tuck_overrides=overrides,
-        tuck_factor_range=(1.0, 1.0),          # exactly the hold pose (+ noise)
-        joint_noise_std=0.05,
+        tuck_factor_range=(0.9, 1.0),          # the hold pose, nearly (+ noise)
+        joint_noise_std=0.08,
     )
     # The roulade's spawn-mix curriculum would reintroduce standing spawns; pin it.
     cfg.curriculum["roulade_spawn_mix"] = CurriculumTermCfg(

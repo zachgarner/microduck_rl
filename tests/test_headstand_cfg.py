@@ -333,8 +333,10 @@ def test_backroll_starts_in_the_hold_and_never_standing():
     cfg = make_microduck_backroll_env_cfg(style="straight")
     p = cfg.events["set_roulade_state"].params
     assert p["standing_prob"] == 0.0 and p["midroll_prob"] == 1.0
-    assert math.radians(175) < p["midroll_pitch_min"] < p["midroll_pitch_max"] < math.radians(185)
-    assert p["tuck_factor_range"] == (1.0, 1.0)
+    assert math.radians(160) < p["midroll_pitch_min"] < p["midroll_pitch_max"] < math.radians(195)
+    assert p["tuck_factor_range"][1] == 1.0
+    from mjlab_microduck.robot.microduck_constants import MICRODUCK_ALLCOLLISIONS_ROBOT_CFG
+    assert cfg.scene.entities["robot"] is MICRODUCK_ALLCOLLISIONS_ROBOT_CFG
     for stage in cfg.curriculum["roulade_spawn_mix"].params["param_stages"]:
         assert stage["params"]["standing_prob"] == 0.0
 
