@@ -83,6 +83,7 @@ from .microduck_headstand_env_cfg import (
     MicroduckHeadstandKickupStraightRlCfg,
     MicroduckHeadstandFoldRlCfg,
     MicroduckHeadstandSplitExitRlCfg,
+    MicroduckHeadstandSplitSwitchRlCfg,
 )
 from .microduck_backroll_env_cfg import (
     make_microduck_backroll_env_cfg,
@@ -284,6 +285,15 @@ register_mjlab_task(
     rl_cfg=MicroduckHeadstandFoldRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
+# Split switch: hold the split headstand and scissor the legs on a flag in the twist slot.
+register_mjlab_task(
+    task_id="Mjlab-HeadstandSplitSwitch-Flat-MicroDuck",
+    env_cfg=make_microduck_headstand_env_cfg(kickup=True, style="split", switch=True),
+    play_env_cfg=make_microduck_headstand_env_cfg(play=True, kickup=True, style="split", switch=True),
+    rl_cfg=MicroduckHeadstandSplitSwitchRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
 # Split exit: from the split hold, the lead leg continues over and down, back to the pike.
 register_mjlab_task(
     task_id="Mjlab-HeadstandSplitExit-Flat-MicroDuck",

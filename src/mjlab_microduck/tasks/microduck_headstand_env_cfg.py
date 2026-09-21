@@ -162,7 +162,7 @@ from mjlab_microduck.tasks.microduck_velocity_env_cfg import (
 from mjlab_microduck.tasks.symmetry import PpoWithSymmetryCfg, SYMMETRY_CFG
 
 
-def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, style: str = "split") -> ManagerBasedRlEnvCfg:
+def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, style: str = "split", switch: bool = False) -> ManagerBasedRlEnvCfg:
     """Create the Microduck headstand environment configuration.
 
     style: "split" (the default hold), "tucked" (two-leg hop, knees bent,
@@ -288,6 +288,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             "knee_full":        knee_full,
             "knee_zero":        knee_zero,
             "style":            style,
+            "switch_command":   "twist" if switch else None,
         },
     )
     # Flat-topped inside the measured 20° rest tilt, Gaussian beyond it:
@@ -303,6 +304,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             "knee_full":        knee_full,
             "knee_zero":        knee_zero,
             "style":            style,
+            "switch_command":   "twist" if switch else None,
         },
     )
     # Park tax, ALWAYS on (run 1 parked in a beak-down tripod the latched
@@ -519,7 +521,16 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
     command.ranges.lin_vel_x = (-0.01, 0.01)
     command.ranges.lin_vel_y = (-0.01, 0.01)
     command.ranges.ang_vel_z = (-0.05, 0.05)
-    cfg.commands["twist"] = microduck_mdp.VelocityCommandCommandOnlyCfg(**vars(command))
+    if switch:
+        # The split-switch flag rides in the twist vx slot (Pollen's posture-
+        # flag convention): 0 = left leg forward, 1 = mirrored. Resampled
+        # every 2-4 s; every episode starts at 0 to match the hold spawn.
+        command.resampling_time_range = (2.0, 4.0)
+        cfg.commands["twist"] = microduck_mdp.SplitSwitchCommandCfg(
+            **{**vars(command), "sit_prob": 0.6, "ramp_s": 1.0, "sit_z": 0.0, "stand_z": 1.0}
+        )
+    else:
+        cfg.commands["twist"] = microduck_mdp.VelocityCommandCommandOnlyCfg(**vars(command))
 
     # ── Terminations ──────────────────────────────────────────────────────────
     # Inverted is the goal, so the tilt-based fall termination does not apply.
@@ -813,6 +824,11 @@ def _two_leg_runner_cfg(name: str) -> RslRlOnPolicyRunnerCfg:
 
 MicroduckHeadstandKickupTuckedRlCfg = _two_leg_runner_cfg("microduck_headstand_kickup_tucked")
 MicroduckHeadstandFoldRlCfg = _two_leg_runner_cfg("microduck_headstand_fold")   # the bow is symmetric too
+MicroduckHeadstandSplitSwitchRlCfg = RslRlOnPolicyRunnerCfg(          # asymmetric
+    actor=MicroduckHeadstandRlCfg.actor, critic=MicroduckHeadstandRlCfg.critic, algorithm=MicroduckHeadstandRlCfg.algorithm,
+    wandb_project="mjlab_microduck", experiment_name="microduck_headstand_splitswitch", run_name="microduck_headstand_splitswitch",
+    save_interval=250, num_steps_per_env=24, max_iterations=6_000,
+)
 MicroduckHeadstandSplitExitRlCfg = RslRlOnPolicyRunnerCfg(          # asymmetric: no mirror loss
     actor=MicroduckHeadstandRlCfg.actor, critic=MicroduckHeadstandRlCfg.critic, algorithm=MicroduckHeadstandRlCfg.algorithm,
     wandb_project="mjlab_microduck", experiment_name="microduck_headstand_splitexit", run_name="microduck_headstand_splitexit",

@@ -7606,10 +7606,16 @@ def _headstand_on_head_alone(env: ManagerBasedRlEnv) -> torch.Tensor:
     return gate.float()
 
 
-def _headstand_pose_score(env: ManagerBasedRlEnv, asset: Entity, target_overrides: dict, pose_std: float) -> torch.Tensor:
+def _headstand_pose_score(env: ManagerBasedRlEnv, asset: Entity, target_overrides: dict, pose_std: float, switch_command: Optional[str] = None) -> torch.Tensor:
     target = _servo_default_joint_pos(env, asset).clone()
     for idx, val in target_overrides.items():
         target[:, idx] = val
+    blend = _switch_blend(env, switch_command)
+    if blend is not None:
+        mirrored = target.clone()
+        for idx, val in _mirror_overrides(target_overrides).items():
+            mirrored[:, idx] = val
+        target = target + blend.unsqueeze(-1) * (mirrored - target)
     err = ((_servo_joint_pos(env, asset) - target) ** 2).mean(dim=-1)
     return torch.exp(-err / (pose_std * pose_std))
 
@@ -7965,6 +7971,7 @@ def headstand_composite(
     knee_full: float = 0.3,
     knee_zero: float = 0.6,
     style: str = "split",
+    switch_command: Optional[str] = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """The hold: height Gaussian × inverted Gaussian × pose Gaussian ×
@@ -7985,7 +7992,7 @@ def headstand_composite(
     # Track the moving setpoint (ahead of it scores ~0); once the ramp has
     # arrived this is the plain inverted Gaussian.
     inverted = torch.exp(-torch.abs(setpoint - inv) / (inverted_std * inverted_std))
-    pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
+    pose = _headstand_pose_score(env, asset, target_overrides, pose_std, switch_command)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero, style)
     return height * inverted * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
 
@@ -7998,6 +8005,7 @@ def headstand_inverted_sharp(
     knee_full: float = 0.3,
     knee_zero: float = 0.6,
     style: str = "split",
+    switch_command: Optional[str] = None,
     asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
     """Sharp inverted term for the last degrees, flat-topped inside the
@@ -8011,7 +8019,7 @@ def headstand_inverted_sharp(
     excess = torch.clamp((1.0 - inv) - (1.0 - _HEADSTAND_REST_TILT_COS), min=0.0)
     sharp = torch.exp(-excess / (inverted_std * inverted_std))
     arrived = (_headstand_setpoint(env) >= 0.999).float()   # the ramp is there; no early jackpot
-    pose = _headstand_pose_score(env, asset, target_overrides, pose_std)
+    pose = _headstand_pose_score(env, asset, target_overrides, pose_std, switch_command)
     legs = _headstand_legs_straight(env, asset, knee_full, knee_zero, style)
     return sharp * arrived * pose * legs * _headstand_on_head_alone(env) * _headstand_arrived_gently(env) * _forward_fold_gate(asset)
 
@@ -8072,6 +8080,59 @@ def headstand_airborne_penalty(
     if supported is None:
         return torch.zeros(env.num_envs, device=env.device)
     return (~supported).float()
+
+
+# ── Split switch (Zach, Sep 21: "switch its split while in the air ... a little flair") ──
+# A cued two-state trick on Pollen's sit-stand pattern: cmd = [switch_flag, 0, 0]
+# in the twist slot (the runtime writes 0/1); the hold's pose target is the
+# split with the LEFT leg forward at flag 0 and the mirrored split at flag 1,
+# blended over ramp_s so the scissor is a glide, not a snap. Starts at 0 on
+# every episode (the spawn is the left-forward hold); resamples flip it.
+
+class SplitSwitchCommand(SitStandCommand):
+    """cmd = [switch_flag, 0, 0]; alpha slews 0→1 over ramp_s after a flip."""
+
+    def _resample_command(self, env_ids: torch.Tensor) -> None:
+        n = len(env_ids)
+        if n == 0:
+            return
+        fresh = self._env_ref.episode_length_buf[env_ids] <= 1
+        flip = (torch.rand(n, device=self.device) < self._sit_prob).float()
+        self.vel_command_b[env_ids] = 0.0
+        self.vel_command_b[env_ids, 0] = torch.where(fresh, torch.zeros_like(flip), flip)
+
+    def compute(self, dt: float) -> None:
+        UniformVelocityCommand.compute(self, dt)
+        fresh = self._env_ref.episode_length_buf <= 1
+        self._alpha = torch.where(fresh, torch.zeros_like(self._alpha), self._alpha)
+        step = dt / max(self._ramp_s, 1e-6)
+        delta = self.vel_command_b[:, 0] - self._alpha
+        self._alpha += torch.clamp(delta, -step, step)
+
+
+@_dataclass(kw_only=True)
+class SplitSwitchCommandCfg(SitStandCommandCfg):
+    class_type: type = SplitSwitchCommand
+
+    def build(self, env: ManagerBasedRlEnv) -> "SplitSwitchCommand":
+        return SplitSwitchCommand(self, env)
+
+
+def _mirror_overrides(overrides: dict) -> dict:
+    """The same pose with left and right legs swapped: joints 0-4 ↔ 9-13 with
+    the sign flipped (mirrored joint convention), head yaw/roll negated."""
+    out = dict(overrides)
+    for l, r in zip(range(0, 5), range(9, 14)):
+        out[l], out[r] = -overrides[r], -overrides[l]
+    out[7], out[8] = -overrides[7], -overrides[8]
+    return out
+
+
+def _switch_blend(env: ManagerBasedRlEnv, command_name: Optional[str]) -> Optional[torch.Tensor]:
+    if not command_name or command_name not in env.command_manager.active_terms:
+        return None
+    term = env.command_manager.get_term(command_name)
+    return getattr(term, "alpha", None)
 
 
 def headstand_ahead_of_ramp_penalty(

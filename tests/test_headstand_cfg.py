@@ -359,3 +359,14 @@ def test_split_exit_frontier_ignores_a_backward_fall():
     pitch = microduck_mdp._trunk_pitch(SimpleNamespace(data=SimpleNamespace(root_link_quat_w=torch.tensor([q(180), q(250)]))))
     unwrapped = torch.where(pitch < 0, pitch + 2 * math.pi, pitch)
     assert unwrapped[1] > unwrapped[0] > math.radians(170)   # backward = the angle keeps growing, never "down to the pike"
+
+
+def test_split_switch_flag_and_mirror():
+    cfg = make_microduck_headstand_env_cfg(kickup=True, style="split", switch=True)
+    assert isinstance(cfg.commands["twist"], microduck_mdp.SplitSwitchCommandCfg)
+    assert cfg.rewards["headstand_composite"].params["switch_command"] == "twist"
+    from mjlab_microduck.tasks.microduck_headstand_env_cfg import HEADSTAND_OVERRIDES
+    m = microduck_mdp._mirror_overrides(HEADSTAND_OVERRIDES)
+    assert m[2] == -HEADSTAND_OVERRIDES[11] and m[11] == -HEADSTAND_OVERRIDES[2]   # legs swapped, signs flipped
+    assert m[5] == HEADSTAND_OVERRIDES[5] and m[6] == HEADSTAND_OVERRIDES[6]         # neck untouched
+    assert microduck_mdp._mirror_overrides(m) == HEADSTAND_OVERRIDES                 # an involution
