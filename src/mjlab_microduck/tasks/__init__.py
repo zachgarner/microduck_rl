@@ -83,6 +83,11 @@ from .microduck_headstand_env_cfg import (
     MicroduckHeadstandKickupStraightRlCfg,
     MicroduckHeadstandFoldRlCfg,
 )
+from .microduck_backroll_env_cfg import (
+    make_microduck_backroll_env_cfg,
+    MicroduckBackrollStraightRlCfg,
+    MicroduckBackrollSplitRlCfg,
+)
 from .backlash import make_backlash_variant
 
 # Standard velocity task
@@ -276,6 +281,21 @@ register_mjlab_task(
     env_cfg=make_microduck_headstand_env_cfg(style="fold"),
     play_env_cfg=make_microduck_headstand_env_cfg(play=True, style="fold"),
     rl_cfg=MicroduckHeadstandFoldRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+# Back-roll exit: the roulade env spawned in the headstand hold, rolling to standing.
+register_mjlab_task(
+    task_id="Mjlab-HeadstandBackrollStraight-Flat-MicroDuck",
+    env_cfg=make_microduck_backroll_env_cfg(style="straight"),
+    play_env_cfg=make_microduck_backroll_env_cfg(play=True, style="straight"),
+    rl_cfg=MicroduckBackrollStraightRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-HeadstandBackrollSplit-Flat-MicroDuck",
+    env_cfg=make_microduck_backroll_env_cfg(style="split"),
+    play_env_cfg=make_microduck_backroll_env_cfg(play=True, style="split"),
+    rl_cfg=MicroduckBackrollSplitRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 register_mjlab_task(

@@ -1,0 +1,76 @@
+"""Microduck back-roll exit: from the headstand hold, roll down the back and stand.
+
+Zach, Sep 20 2026 night: "fold -> kick up to straight -> hold -> roll -> ...".
+The exit from a headstand is the second half of Pollen's forward roll: the
+roll passes through "inverted, 180°" on its way from standing to standing,
+and the roulade env already trains from mid-roll spawns (its reverse
+curriculum). This task IS the roulade env with every episode spawned at
+180° in our hold pose (straight or split) and the rotation accumulator
+pre-set to 180°, so the roll's own progress, landing and stand-tax rewards
+carry it to standing. No new reward terms.
+
+Runtime chaining: the runtime hot-swaps ONNX policies with a shared obs
+contract (AGENTS.md), so hold → backroll is a policy switch, like the roll
+handing to the standing policy after landing.
+"""
+
+import math
+
+from mjlab.envs import ManagerBasedRlEnvCfg
+from mjlab.managers import CurriculumTermCfg
+
+from mjlab_microduck.tasks import mdp as microduck_mdp
+from mjlab_microduck.tasks.microduck_roulade_env_cfg import (
+    make_microduck_roulade_env_cfg,
+    MicroduckRouladeRlCfg,
+)
+from mjlab_microduck.tasks.microduck_headstand_env_cfg import (
+    HEADSTAND_OVERRIDES,
+    HEADSTAND_STRAIGHT_OVERRIDES,
+    HEADSTAND_Z,
+)
+from mjlab.rl import RslRlOnPolicyRunnerCfg
+
+
+def make_microduck_backroll_env_cfg(play: bool = False, style: str = "straight") -> ManagerBasedRlEnvCfg:
+    cfg = make_microduck_roulade_env_cfg(play=play)
+    overrides = HEADSTAND_STRAIGHT_OVERRIDES if style == "straight" else HEADSTAND_OVERRIDES
+    spawn = cfg.events["set_roulade_state"].params
+    spawn.update(
+        standing_prob=0.0,
+        midroll_prob=1.0,
+        midroll_pitch_min=math.radians(176.0),
+        midroll_pitch_max=math.radians(184.0),
+        # trunk_base rests at HEADSTAND_Z in the hold; spawn a hair above.
+        midroll_z_min=HEADSTAND_Z + 0.002,
+        midroll_z_max=HEADSTAND_Z + 0.006,
+        midroll_omega_range=(0.0, 0.0),        # from a held headstand, no momentum
+        tuck_overrides=overrides,
+        tuck_factor_range=(1.0, 1.0),          # exactly the hold pose (+ noise)
+        joint_noise_std=0.05,
+    )
+    # The roulade's spawn-mix curriculum would reintroduce standing spawns; pin it.
+    cfg.curriculum["roulade_spawn_mix"] = CurriculumTermCfg(
+        func=microduck_mdp.event_param_curriculum,
+        params={
+            "event_name": "set_roulade_state",
+            "param_stages": [{"step": 0, "params": {"standing_prob": 0.0, "midroll_prob": 1.0}}],
+        },
+    )
+    # The exit is a controlled fall onto the back plus the rise: a 6 s episode
+    # like the headstand's (the roulade's 5 s starts standing).
+    cfg.episode_length_s = 6.0
+    return cfg
+
+
+def _runner(name: str) -> RslRlOnPolicyRunnerCfg:
+    return RslRlOnPolicyRunnerCfg(
+        actor=MicroduckRouladeRlCfg.actor, critic=MicroduckRouladeRlCfg.critic,
+        algorithm=MicroduckRouladeRlCfg.algorithm,
+        wandb_project="mjlab_microduck", experiment_name=name, run_name=name,
+        save_interval=250, num_steps_per_env=24, max_iterations=6_000,
+    )
+
+
+MicroduckBackrollStraightRlCfg = _runner("microduck_headstand_backroll_straight")
+MicroduckBackrollSplitRlCfg = _runner("microduck_headstand_backroll_split")

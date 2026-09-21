@@ -326,3 +326,14 @@ def test_ramp_setpoint_starts_at_the_spawn_and_arrives_at_one():
     assert abs(float(sp[2]) - 1.0) < 1e-6            # after 2 s it has arrived
     microduck_mdp._HEADSTAND_RAMP_S = 0.0
     assert torch.allclose(microduck_mdp._headstand_setpoint(env), torch.ones(3))
+
+
+def test_backroll_starts_in_the_hold_and_never_standing():
+    from mjlab_microduck.tasks.microduck_backroll_env_cfg import make_microduck_backroll_env_cfg
+    cfg = make_microduck_backroll_env_cfg(style="straight")
+    p = cfg.events["set_roulade_state"].params
+    assert p["standing_prob"] == 0.0 and p["midroll_prob"] == 1.0
+    assert math.radians(175) < p["midroll_pitch_min"] < p["midroll_pitch_max"] < math.radians(185)
+    assert p["tuck_factor_range"] == (1.0, 1.0)
+    for stage in cfg.curriculum["roulade_spawn_mix"].params["param_stages"]:
+        assert stage["params"]["standing_prob"] == 0.0
