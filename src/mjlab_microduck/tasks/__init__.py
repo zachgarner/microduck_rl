@@ -82,6 +82,7 @@ from .microduck_headstand_env_cfg import (
     MicroduckHeadstandKickupTuckedRlCfg,
     MicroduckHeadstandKickupStraightRlCfg,
     MicroduckHeadstandFoldRlCfg,
+    MicroduckHeadstandSplitExitRlCfg,
 )
 from .microduck_backroll_env_cfg import (
     make_microduck_backroll_env_cfg,
@@ -283,6 +284,15 @@ register_mjlab_task(
     rl_cfg=MicroduckHeadstandFoldRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
+# Split exit: from the split hold, the lead leg continues over and down, back to the pike.
+register_mjlab_task(
+    task_id="Mjlab-HeadstandSplitExit-Flat-MicroDuck",
+    env_cfg=make_microduck_headstand_env_cfg(style="splitexit"),
+    play_env_cfg=make_microduck_headstand_env_cfg(play=True, style="splitexit"),
+    rl_cfg=MicroduckHeadstandSplitExitRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
 # Back-roll exit: the roulade env spawned in the headstand hold, rolling to standing.
 register_mjlab_task(
     task_id="Mjlab-HeadstandBackrollStraight-Flat-MicroDuck",

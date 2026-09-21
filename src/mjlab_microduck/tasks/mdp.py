@@ -7852,12 +7852,40 @@ def fold_progress(
     return gain * 2.0
 
 
+def fold_progress_down(
+    env: ManagerBasedRlEnv,
+    target_pitch: float,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """The split exit's frontier: from the headstand (π) DOWN to the pike
+    angle. Pays each new lowest trunk angle reached, floored at the pike,
+    only while supported and nose-down; coming back up earns nothing and
+    charges nothing. Overshooting past the pike toward standing pays nothing
+    extra (the fold_composite then pays the rest in the pike)."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_headstand(env, asset)
+    pitch = torch.clamp(_trunk_pitch(asset), min=target_pitch)
+    if not hasattr(env, "_fold_min_pitch"):
+        env._fold_min_pitch = torch.full((env.num_envs,), math.pi, device=env.device)
+    supported = _sensor_any_contact(env, _HEADSTAND_SUPPORT_SENSOR)
+    counts = _forward_fold_gate(asset)
+    if supported is not None:
+        counts = counts * supported.float()
+    gain = torch.clamp(env._fold_min_pitch - pitch, min=0.0) * counts
+    env._fold_min_pitch = env._fold_min_pitch - gain
+    return gain * 2.0
+
+
 def reset_fold_progress(env: ManagerBasedRlEnv, env_ids: torch.Tensor) -> None:
     if env_ids is None or len(env_ids) == 0:
         return
+    ids = env_ids.to(env.device, dtype=torch.long)
     if not hasattr(env, "_fold_max_pitch"):
         env._fold_max_pitch = torch.zeros(env.num_envs, device=env.device)
-    env._fold_max_pitch[env_ids.to(env.device, dtype=torch.long)] = 0.0
+    if not hasattr(env, "_fold_min_pitch"):
+        env._fold_min_pitch = torch.full((env.num_envs,), math.pi, device=env.device)
+    env._fold_max_pitch[ids] = 0.0
+    env._fold_min_pitch[ids] = math.pi
 
 
 def fold_overshoot_penalty(

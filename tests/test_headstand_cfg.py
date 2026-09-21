@@ -337,3 +337,12 @@ def test_backroll_starts_in_the_hold_and_never_standing():
     assert p["tuck_factor_range"] == (1.0, 1.0)
     for stage in cfg.curriculum["roulade_spawn_mix"].params["param_stages"]:
         assert stage["params"]["standing_prob"] == 0.0
+
+
+def test_split_exit_spawns_in_the_hold_and_targets_the_pike():
+    cfg = make_microduck_headstand_env_cfg(style="splitexit")
+    p = cfg.events["set_headstand_spawn"].params
+    assert p["hold_prob"] == 1.0 and p["standing_prob"] == 0.0 and p["tripod_prob"] == 0.0
+    assert cfg.rewards["fold_progress"].func is microduck_mdp.fold_progress_down
+    assert "fold_composite" in cfg.rewards and "fold_overshoot" not in cfg.rewards
+    assert "flopped" not in cfg.terminations

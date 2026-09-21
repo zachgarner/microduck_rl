@@ -178,7 +178,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
     # collision geoms (servo housing etc.) that sit 2–8 mm below the sole when
     # the ankle is pitched, and a sole-only sensor read "feet off" while the
     # housing carried the tripod (review item 3).
-    if style == "fold":
+    if style in ("fold", "splitexit"):
         overrides, hold_z, knee_full, knee_zero = HEADSTAND_OVERRIDES, HEADSTAND_Z, 0.3, 0.6   # unused by the fold rewards
     elif style == "tucked":
         overrides, hold_z, knee_full, knee_zero = HEADSTAND_TUCKED_OVERRIDES, HEADSTAND_TUCKED_Z, 1.0, 1.3
@@ -364,8 +364,13 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         params={"inverted_full": 0.94, "inverted_zero": 0.71},
     )
 
-    if style == "fold":
-        # The fold policy: standing → resting pike. Drop every headstand hold
+    if style in ("fold", "splitexit"):
+        # The fold policy: standing → resting pike. The SPLIT EXIT (Zach:
+        # "continue the split to exit") is the same target reached from the
+        # split hold: the lead leg goes over and down to the floor, the other
+        # follows, and the duck ends resting in the pike. Same rewards, the
+        # spawn is the split hold, and the progress frontier runs the other
+        # way (fold_progress_down). Drop every headstand hold
         # term and pay the pike instead; keep the gates that price slams,
         # jumps and flops. Terminates on a flop like the headstand.
         pike_q = microduck_mdp._HEADSTAND_PIKE_QPOS
@@ -380,7 +385,8 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         # billed lightly, below), and the way down pays ~7 once (frontier, 76°)
         # then 4/step in the pike. Forward is the only thing that pays.
         cfg.rewards["fold_progress"] = RewardTermCfg(
-            func=microduck_mdp.fold_progress, weight=5.0, params={"target_pitch": pike_pitch},
+            func=microduck_mdp.fold_progress_down if style == "splitexit" else microduck_mdp.fold_progress,
+            weight=5.0, params={"target_pitch": pike_pitch},
         )
         cfg.rewards["fold_composite"] = RewardTermCfg(
             func=microduck_mdp.fold_composite, weight=4.0,
@@ -390,9 +396,10 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
                 "pose_std": 0.45, "target_overrides": pike_overrides,
             },
         )
-        cfg.rewards["fold_overshoot"] = RewardTermCfg(
-            func=microduck_mdp.fold_overshoot_penalty, weight=-1.0, params={"target_pitch": pike_pitch},
-        )
+        if style == "fold":
+            cfg.rewards["fold_overshoot"] = RewardTermCfg(
+                func=microduck_mdp.fold_overshoot_penalty, weight=-1.0, params={"target_pitch": pike_pitch},
+            )
         cfg.rewards["headstand_other_contact"].weight = -0.3   # a flop is billed, not terminated (below)
 
     # ── Sim2real regularisers (velocity's set; motion-blockers kept ≈ 0) ─────
@@ -511,7 +518,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         time_out=False,
         params={"sensor_names": (feet_ground_cfg.name,)},
     )
-    if style != "fold":
+    if style not in ("fold", "splitexit"):
         cfg.terminations["flopped"] = TerminationTermCfg(
             func=microduck_mdp.headstand_flopped,
             time_out=False,
@@ -525,7 +532,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
     cfg.events["reset_action_history"] = EventTermCfg(
         func=microduck_mdp.reset_action_history, mode="reset",
     )
-    if style == "fold":
+    if style in ("fold", "splitexit"):
         cfg.events["reset_fold_progress"] = EventTermCfg(
             func=microduck_mdp.reset_fold_progress, mode="reset",
         )
@@ -533,7 +540,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
     cfg.events["foot_friction"].params["ranges"] = (0.7, 1.3)
 
     # Spawn mix — stage 0 of the reverse curriculum below: mostly the hold.
-    standing_p0 = 0.0 if kickup else (0.7 if style == "fold" else STANDING_PROB_STAGE0)
+    standing_p0 = 0.0 if (kickup or style == "splitexit") else (0.7 if style == "fold" else STANDING_PROB_STAGE0)
     # Kick-up: 40% of episodes start in the RESTING tripod (measured settled
     # state, head and feet on the floor from step 0), 30% partway through the
     # swing, 30% in the hold.
@@ -547,9 +554,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             # the pike (31/32, Sep 20 2026): standing starts learn the bow into
             # the pike, pike starts keep the hop warm, the rest polish.
             "standing_prob":       standing_p0,
-            "partway_prob":        0.30 if kickup else (0.0 if style == "fold" else 0.20),
-            "hold_prob":           0.30 if kickup else (0.0 if style == "fold" else 0.15),
-            "tripod_prob":         0.40 if kickup else (0.30 if style == "fold" else 0.35),
+            "partway_prob":        0.30 if kickup else (0.0 if style in ("fold", "splitexit") else 0.20),
+            "hold_prob":           0.30 if kickup else (1.0 if style == "splitexit" else (0.0 if style == "fold" else 0.15)),
+            "tripod_prob":         0.40 if kickup else (0.30 if style == "fold" else (0.0 if style == "splitexit" else 0.35)),
             "standing_z_min":      0.11,
             "standing_z_max":      0.12,
             "standing_tilt_max":   math.radians(3.0),
@@ -640,6 +647,8 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
                 {"step": 0,         "params": {"standing_prob": 0.7, "partway_prob": 0.0, "hold_prob": 0.0, "tripod_prob": 0.3}},
                 {"step": 1000 * 24, "params": {"standing_prob": 0.8, "partway_prob": 0.0, "hold_prob": 0.0, "tripod_prob": 0.2}},
             ] if style == "fold" else [
+                {"step": 0,         "params": {"standing_prob": 0.0, "partway_prob": 0.0, "hold_prob": 1.0, "tripod_prob": 0.0}},
+            ] if style == "splitexit" else [
                 {"step": 0,         "params": {"standing_prob": STANDING_PROB_STAGE0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.35}},
                 {"step": 1000 * 24, "params": {"standing_prob": 0.45, "partway_prob": 0.15, "hold_prob": 0.10, "tripod_prob": 0.30}},
                 {"step": 2000 * 24, "params": {"standing_prob": 0.60, "partway_prob": 0.10, "hold_prob": 0.05, "tripod_prob": 0.25}},
@@ -647,7 +656,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         },
     )
     # The park tax is on from step 0 and tightens once hold spawns balance.
-    if style != "fold":
+    if style not in ("fold", "splitexit"):
         cfg.curriculum["not_inverted_weight"] = CurriculumTermCfg(
                 func=microduck_mdp.reward_weight,
                 params={
@@ -712,7 +721,7 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             ],
         },
     )
-    if style != "fold":
+    if style not in ("fold", "splitexit"):
         cfg.curriculum["arrival_damping_weight"] = CurriculumTermCfg(
                 func=microduck_mdp.reward_weight,
                 params={
@@ -792,6 +801,11 @@ def _two_leg_runner_cfg(name: str) -> RslRlOnPolicyRunnerCfg:
 
 MicroduckHeadstandKickupTuckedRlCfg = _two_leg_runner_cfg("microduck_headstand_kickup_tucked")
 MicroduckHeadstandFoldRlCfg = _two_leg_runner_cfg("microduck_headstand_fold")   # the bow is symmetric too
+MicroduckHeadstandSplitExitRlCfg = RslRlOnPolicyRunnerCfg(          # asymmetric: no mirror loss
+    actor=MicroduckHeadstandRlCfg.actor, critic=MicroduckHeadstandRlCfg.critic, algorithm=MicroduckHeadstandRlCfg.algorithm,
+    wandb_project="mjlab_microduck", experiment_name="microduck_headstand_splitexit", run_name="microduck_headstand_splitexit",
+    save_interval=250, num_steps_per_env=24, max_iterations=6_000,
+)
 MicroduckHeadstandKickupStraightRlCfg = _two_leg_runner_cfg("microduck_headstand_kickup_straight")
 
 # The kick-up policy: same network, its own experiment so checkpoints and
