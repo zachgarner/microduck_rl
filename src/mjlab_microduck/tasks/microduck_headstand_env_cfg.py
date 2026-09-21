@@ -60,6 +60,12 @@ PARK_TAX_WEIGHT      = float(os.environ.get("HEADSTAND_PARK_TAX", -0.5))     # p
 PROGRESS_WEIGHT      = float(os.environ.get("HEADSTAND_PROGRESS_W", 2.0))    # the swing potential
 STANDING_PROB_STAGE0 = float(os.environ.get("HEADSTAND_STANDING_P0", 0.30))  # share of standing spawns at step 0
 PARTWAY_PITCH_MIN_DEG = float(os.environ.get("HEADSTAND_PARTWAY_MIN_DEG", 95.0))  # partway spawns start here (the tripod)
+# Polish schedule, in iterations: when the smoothness taxes start. Default keeps
+# Pollen's late timing (skill first); a continuation of a run that already has
+# the skill sets HEADSTAND_POLISH_AT=0 (Zach on kick-up run 3: the 500
+# checkpoint "basically perfect", the 1000 "wriggly"; measured 43% more action
+# change per step in the hold at 1000).
+POLISH_AT = int(os.environ.get("HEADSTAND_POLISH_AT", 2500))
 
 # ── Domain randomisation (matched to standup/velocity for sim2real parity) ───
 ENABLE_COM_RANDOMIZATION             = True
@@ -695,12 +701,12 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         params={
             "reward_name": "action_rate_l2",
             "weight_stages": [
-                {"step": 0,          "weight": -0.05},
-                {"step": 1000 * 24,  "weight": -0.1},
-                {"step": 1500 * 24,  "weight": -0.2},
-                {"step": 2000 * 24,  "weight": -0.3},
-                {"step": 2500 * 24,  "weight": -0.4},
-                {"step": 3000 * 24,  "weight": -0.46},
+                {"step": 0,                              "weight": -0.05 if POLISH_AT > 0 else -0.2},
+                {"step": max(POLISH_AT - 1500, 1) * 24,  "weight": -0.1 if POLISH_AT > 0 else -0.2},
+                {"step": max(POLISH_AT - 1000, 2) * 24,  "weight": -0.2},
+                {"step": max(POLISH_AT - 500, 3) * 24,   "weight": -0.3},
+                {"step": max(POLISH_AT, 4) * 24,         "weight": -0.4},
+                {"step": (POLISH_AT + 500) * 24,         "weight": -0.46},
             ],
         },
     )
@@ -710,9 +716,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
                 params={
                     "reward_name": "headstand_arrival_damping",
                     "weight_stages": [
-                        {"step": 0,          "weight": 0.0},
-                        {"step": 2500 * 24,  "weight": -0.025},
-                        {"step": 3500 * 24,  "weight": -0.05},
+                        {"step": 0,                          "weight": 0.0 if POLISH_AT > 0 else -0.025},
+                        {"step": max(POLISH_AT, 1) * 24,     "weight": -0.025},
+                        {"step": (POLISH_AT + 1000) * 24,    "weight": -0.05},
                     ],
                 },
             )
@@ -721,8 +727,8 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             params={
                 "reward_name": "joint_torque_rate_l2",
                 "weight_stages": [
-                    {"step": 0,          "weight": 0.0},
-                    {"step": 2500 * 24,  "weight": -1e-3},
+                    {"step": 0,                          "weight": 0.0 if POLISH_AT > 0 else -1e-3},
+                    {"step": max(POLISH_AT, 1) * 24,     "weight": -1e-3},
                 ],
             },
         )
