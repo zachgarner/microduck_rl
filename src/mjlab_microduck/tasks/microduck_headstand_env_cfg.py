@@ -60,6 +60,7 @@ PARK_TAX_WEIGHT      = float(os.environ.get("HEADSTAND_PARK_TAX", -0.5))     # p
 PROGRESS_WEIGHT      = float(os.environ.get("HEADSTAND_PROGRESS_W", 2.0))    # the swing potential
 STANDING_PROB_STAGE0 = float(os.environ.get("HEADSTAND_STANDING_P0", 0.30))  # share of standing spawns at step 0
 PARTWAY_PITCH_MIN_DEG = float(os.environ.get("HEADSTAND_PARTWAY_MIN_DEG", 95.0))  # partway spawns start here (the tripod)
+BANK_PROB = float(os.environ.get("HEADSTAND_BANK_PROB", 0.0))   # kick-up spawns drawn from the fold's real handover pikes
 # Polish schedule, in iterations: when the smoothness taxes start. Default keeps
 # Pollen's late timing (skill first); a continuation of a run that already has
 # the skill sets HEADSTAND_POLISH_AT=0 (Zach on kick-up run 3: the 500
@@ -566,7 +567,8 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
             "standing_prob":       standing_p0,
             "partway_prob":        0.30 if kickup else (0.0 if style in ("fold", "splitexit") else 0.20),
             "hold_prob":           0.30 if kickup else (1.0 if style == "splitexit" else (0.0 if style == "fold" else 0.15)),
-            "tripod_prob":         0.40 if kickup else (0.30 if style == "fold" else (0.0 if style == "splitexit" else 0.35)),
+            "tripod_prob":         (0.40 - BANK_PROB * 0.4) if kickup else (0.30 if style == "fold" else (0.0 if style == "splitexit" else 0.35)),
+            "bank_prob":           BANK_PROB if kickup else 0.0,
             "standing_z_min":      0.11,
             "standing_z_max":      0.12,
             "standing_tilt_max":   math.radians(3.0),
@@ -650,9 +652,9 @@ def make_microduck_headstand_env_cfg(play: bool = False, kickup: bool = False, s
         params={
             "event_name": "set_headstand_spawn",
             "param_stages": [
-                {"step": 0,         "params": {"standing_prob": 0.0, "partway_prob": 0.30, "hold_prob": 0.30, "tripod_prob": 0.40}},
-                {"step": 1500 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.25, "hold_prob": 0.20, "tripod_prob": 0.55}},
-                {"step": 3000 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.65}},
+                {"step": 0,         "params": {"standing_prob": 0.0, "partway_prob": 0.30, "hold_prob": 0.30, "tripod_prob": 0.40 - BANK_PROB * 0.4, "bank_prob": BANK_PROB}},
+                {"step": 1500 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.25, "hold_prob": 0.20, "tripod_prob": 0.55 - BANK_PROB * 0.55, "bank_prob": BANK_PROB}},
+                {"step": 3000 * 24, "params": {"standing_prob": 0.0, "partway_prob": 0.20, "hold_prob": 0.15, "tripod_prob": 0.65 - BANK_PROB * 0.65, "bank_prob": BANK_PROB}},
             ] if kickup else [
                 {"step": 0,         "params": {"standing_prob": 0.7, "partway_prob": 0.0, "hold_prob": 0.0, "tripod_prob": 0.3}},
                 {"step": 1000 * 24, "params": {"standing_prob": 0.8, "partway_prob": 0.0, "hold_prob": 0.0, "tripod_prob": 0.2}},

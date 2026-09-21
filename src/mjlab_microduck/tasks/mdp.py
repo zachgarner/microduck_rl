@@ -7452,6 +7452,22 @@ _HEADSTAND_REST_TILT_COS = math.cos(math.radians(20.0))
 # is the resting state itself with no drop. Scripted pushes from here reach
 # 180° in 0.8 s (scripts/headstand/scripted_kickup.py).
 _HEADSTAND_PIKE_QPOS = torch.tensor([-0.1308, 0.0004, 0.1074, 0.7866, -0.0018, 0.6175, 0.0017, 0.0143, 0.015, -1.2441, 0.0849, 0.9495, -0.6523, 1.2342, 0.002, -0.0062, -0.0138, -0.0158, 1.2449, -0.0791, -0.9526])
+# Handover bank: pikes as the FOLD policy actually produces them (Sep 21,
+# scripts/headstand/collect_handover.py, 512 states). Routine v6 lost 6 of
+# 32 at the straight kick-up from the fold's pike while the kick-up was
+# 32/32 from the measured resting pike: train from these instead.
+_HEADSTAND_BANK_PATH = os.path.join(os.path.dirname(__file__), "handover_pike_from_fold.npz")
+_headstand_bank = None
+
+
+def _bank(device):
+    global _headstand_bank
+    if _headstand_bank is None:
+        d = np.load(_HEADSTAND_BANK_PATH)
+        _headstand_bank = (torch.tensor(d["qpos"], dtype=torch.float32), torch.tensor(d["qvel"], dtype=torch.float32))
+    return _headstand_bank[0].to(device), _headstand_bank[1].to(device)
+
+
 _HEADSTAND_TRIPOD_PITCH = math.radians(76.3)   # trunk angle of the pike, for the latch/progress bookkeeping
 
 # Run 1 (Sep 20 2026, wandb rfcisbwg) lessons, both visible in its rollouts:
@@ -7642,6 +7658,7 @@ def reset_headstand_spawn(
     hold_z: float = 0.120,
     hold_overrides: Optional[dict] = None,
     joint_noise_std: float = 0.05,
+    bank_prob: float = 0.0,
 ):
     """Reset into one of three buckets: standing (the whole entry), partway
     (head on the floor, trunk part way through the swing) or hold (dropped
@@ -7665,11 +7682,12 @@ def reset_headstand_spawn(
     asset: Entity = env.scene[asset_cfg.name]
     _headstand_state(env)
 
-    total = standing_prob + partway_prob + hold_prob + tripod_prob
+    total = standing_prob + partway_prob + hold_prob + tripod_prob + bank_prob
     u = torch.rand(num, device=env.device) * total
     is_partway = (u >= standing_prob) & (u < standing_prob + partway_prob)
     is_hold = (u >= standing_prob + partway_prob) & (u < standing_prob + partway_prob + hold_prob)
-    is_tripod = u >= standing_prob + partway_prob + hold_prob
+    is_tripod = (u >= standing_prob + partway_prob + hold_prob) & (u < standing_prob + partway_prob + hold_prob + tripod_prob)
+    is_bank = u >= standing_prob + partway_prob + hold_prob + tripod_prob
 
     yaw = torch.rand(num, device=env.device) * 2 * np.pi - np.pi
     pitch = (torch.rand(num, device=env.device) * 2 - 1) * standing_tilt_max
@@ -7730,6 +7748,21 @@ def reset_headstand_spawn(
         cols = torch.tensor([7 + j for j in servo_ids], device=env.device, dtype=torch.long)
         env.sim.data.qpos[pike_ids.unsqueeze(1), cols.unsqueeze(0)] = pike[7:21] + torch.randn(len(pike_ids), 14, device=env.device) * joint_noise_std
         env.sim.data.qvel[pike_ids, :] = 0.0
+
+    bank_ids = env_ids[is_bank]
+    if len(bank_ids) > 0:
+        qb, vb = _bank(env.device)
+        rows = torch.randint(0, qb.shape[0], (len(bank_ids),), device=env.device)
+        q = qb[rows].clone(); v = vb[rows].clone()
+        q[:, 2] += _env_origin_z(env, bank_ids)
+        cols = torch.tensor([7 + j for j in servo_ids], device=env.device, dtype=torch.long)
+        env.sim.data.qpos[bank_ids, 2:7] = q[:, 2:7]
+        env.sim.data.qpos[bank_ids.unsqueeze(1), cols.unsqueeze(0)] = q[:, 7:21] + torch.randn(len(bank_ids), 14, device=env.device) * joint_noise_std
+        env.sim.data.qvel[bank_ids, :] = v
+        # bookkeeping: the bank's trunk pitch, for the progress frontier and the setpoint
+        w_, x_, y_, z_ = q[:, 3], q[:, 4], q[:, 5], q[:, 6]
+        r20 = 2 * (x_ * z_ - w_ * y_); r22 = 1 - 2 * (x_ * x_ + y_ * y_)
+        pitch[is_bank] = torch.atan2(-r20, r22)
 
     # Latch: hold spawns are born with the head top on the floor; partway
     # spawns only once pitched past the point where the head top is down
