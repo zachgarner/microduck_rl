@@ -27,6 +27,12 @@ excludes:
   - "*.onnx"
 env_vars:
   MICRODUCK_WARM_START: "1"
-  RUN_NAME: headstand-splitover-2
+  SPLITOVER_PROGRESS_W: "16"
+  SPLITOVER_RATE_CAP: "2.5"
+  SPLITOVER_TUCK_W: "-6"
+  SPLITOVER_HI_DEG: "290"
+  SPLITOVER_OMEGA_MAX: "4.0"
+  SPLITOVER_OVERSPEED_W: "-0.5"
+  RUN_NAME: headstand-splitover-3
 max_retries: 0
 timeout_s: 43200

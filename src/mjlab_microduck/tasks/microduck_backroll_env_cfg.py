@@ -15,6 +15,7 @@ handing to the standing policy after landing.
 """
 
 import math
+import os
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers import CurriculumTermCfg
@@ -82,17 +83,24 @@ def make_microduck_backroll_env_cfg(play: bool = False, style: str = "straight")
         # over-the-top window; the tuck costs per step in the same window
         # (~2/step against the progress term's ~5.6/step, so a tuck roll
         # nets less than a slow split-over). Same rate cap as the roll.
+        # Run 2 (weight 8, cap 5 rad/s, tuck -2 over 170-330°): went over at
+        # 8.4 rad/s with the knees bent 1.0 rad before the lead foot landed;
+        # the tuck cost less than the landing paid. Knobs for run 3+.
+        _f = lambda k, d: float(os.environ.get(k, d))
+        lo, hi = math.radians(_f("SPLITOVER_LO_DEG", 170.0)), math.radians(_f("SPLITOVER_HI_DEG", 330.0))
         cfg.rewards["roulade_progress"] = RewardTermCfg(
             func=microduck_mdp.roulade_progress_split,
-            weight=8.0,
-            params={"target_angle": 2 * math.pi, "max_paid_rate": 5.0,
-                    "angle_lo": math.radians(170.0), "angle_hi": math.radians(330.0)},
+            weight=_f("SPLITOVER_PROGRESS_W", 8.0),
+            params={"target_angle": 2 * math.pi, "max_paid_rate": _f("SPLITOVER_RATE_CAP", 5.0),
+                    "angle_lo": lo, "angle_hi": hi},
         )
         cfg.rewards["roulade_tuck"] = RewardTermCfg(
             func=microduck_mdp.roulade_tuck_penalty,
-            weight=-2.0,
-            params={"angle_lo": math.radians(170.0), "angle_hi": math.radians(330.0)},
+            weight=_f("SPLITOVER_TUCK_W", -2.0),
+            params={"angle_lo": lo, "angle_hi": hi},
         )
+        cfg.rewards["roulade_overspeed"].params["omega_max"] = _f("SPLITOVER_OMEGA_MAX", 7.0)
+        cfg.rewards["roulade_overspeed"].weight = _f("SPLITOVER_OVERSPEED_W", -0.1)
     return cfg
 
 

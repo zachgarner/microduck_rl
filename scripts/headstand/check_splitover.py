@@ -40,6 +40,7 @@ if args.mirrored:
     env.event_manager.get_term_cfg("set_roulade_state").params["tuck_overrides"] = m._mirror_overrides(HEADSTAND_OVERRIDES)
 obs, _ = w.reset(); asset = env.scene["robot"]; N = args.episodes
 min_split = np.full(N, 9.0); max_knee = np.zeros(N); seen = np.zeros(N, dtype=bool); first_foot = [None] * N
+knee_before = np.zeros(N); split_before = np.full(N, 9.0); max_rate = np.zeros(N); prev_acc = None
 with torch.no_grad():
     for i in range(150):
         obs, *_ = w.step(pol(obs))
@@ -49,9 +50,14 @@ with torch.no_grad():
         win = (acc > math.radians(170)) & (acc < math.radians(330))
         min_split = np.where(win, np.minimum(min_split, split), min_split); max_knee = np.where(win, np.maximum(max_knee, knee), max_knee); seen |= win
         touching = floor_bodies(env)
+        if prev_acc is not None:
+            max_rate = np.where(win, np.maximum(max_rate, (acc - prev_acc) / env.step_dt), max_rate)
+        prev_acc = acc.copy()
         for j in range(N):
             if first_foot[j] is None and win[j] and "foot" in touching[j]:
                 first_foot[j] = i * env.step_dt
+            if win[j] and first_foot[j] is None:   # going over, no foot down yet
+                knee_before[j] = max(knee_before[j], knee[j]); split_before[j] = min(split_before[j], split[j])
 inv = m._inverted_cos(asset).numpy(); touching = floor_bodies(env)
 standing = sum(1 for j in range(N) if touching[j] == {"foot"} and inv[j] < -math.cos(math.radians(30)))
 print(f"{args.run} {args.checkpoint}, {N} episodes from the split hold; standing at the end {standing}/{N}; went over (window seen) {int(seen.sum())}/{N}")
@@ -59,3 +65,6 @@ print(f"  hip split while going over (hold = 2.0 rad, together = 0): min per epi
 print(f"  worst knee bend while going over (straight = 0): median {np.median(max_knee[seen]):.2f} rad, max {max_knee[seen].max():.2f}")
 print(f"  kept the split (min split > 1.0 rad AND knees < 0.6 rad): {int(((min_split > 1.0) & (max_knee < 0.6) & seen).sum())}/{N}")
 print(f"  a foot touched the floor during the go-over: {sum(1 for t in first_foot if t is not None)}/{N}")
+bf = knee_before[seen]; sb = split_before[seen]
+print(f"  BEFORE the first foot lands: worst knee median {np.median(bf):.2f} rad, min split median {np.median(sb[sb < 9]) if (sb < 9).any() else float('nan'):.2f} rad")
+print(f"  peak rotation rate going over: median {np.median(max_rate[seen]):.1f} rad/s, max {max_rate[seen].max():.1f}")
