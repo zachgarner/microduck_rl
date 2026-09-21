@@ -35,6 +35,7 @@ TASK = {
     "splitexit": "Mjlab-HeadstandSplitExit-Flat-MicroDuck",
     "switch": "Mjlab-HeadstandSplitSwitch-Flat-MicroDuck",
     "splitroll": "Mjlab-HeadstandBackrollSplit-Flat-MicroDuck",
+    "splitover": "Mjlab-HeadstandSplitOver-Flat-MicroDuck",
 }
 TWIST_VX = 48   # obs layout: 48 proprio, then [twist(3), head_pose(4), body_pose(6)]
 
@@ -77,6 +78,7 @@ def main():
     p.add_argument("--switch-hold-s", type=float, default=1.5, help="hold in each split of the switch")
     p.add_argument("--orbit-deg-s", type=float, default=0.0, help="camera orbits at this rate while the video's duck is in the switch stages (Zach: \"can the camera rotate for the split switches?\")")
     p.add_argument("--single-switch", action="store_true", help="one switch only, exit from the mirrored split (Zach: switch-switch-switch looks like flailing)")
+    p.add_argument("--splitover", default=None, help="run:ckpt of the split-over exit (legs kept split going over); replaces the split exit and the stand-up")
     p.add_argument("--splitroll", default=None, help="run:ckpt of the split back roll; replaces the split exit and the stand-up")
     p.add_argument("--hold-s", type=float, default=2.0); p.add_argument("--episodes", type=int, default=16)
     p.add_argument("--seconds", type=float, default=16.0); p.add_argument("--video", default=None)
@@ -116,7 +118,11 @@ def main():
         k = [n for n, *_ in stages].index("splitexit")
         stages[k:k] = [("switch",     flagged(sw, 1.0), "mirrored", args.switch_hold_s)] + (
                       [] if args.single_switch else [("switchback", flagged(sw, 0.0), "original", args.switch_hold_s)])
-    if args.splitroll:
+    if args.splitover:
+        k = [n for n, *_ in stages].index("splitexit")
+        stages[k:k + 2] = [("splitover", torch_policy(TASK["splitover"], args.splitover, w), "standing", 0.3),
+                           ("settle2",   stand_pol,                                         "standing", 1.0)]
+    elif args.splitroll:
         # Zach, Sep 21: the split exit should "continue the split" over into a
         # back roll, not come back down the way it went up. The split back
         # roll ends standing on its own, so Pollen's stand-up goes too.
