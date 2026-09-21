@@ -89,6 +89,7 @@ from .microduck_backroll_env_cfg import (
     make_microduck_backroll_env_cfg,
     MicroduckBackrollStraightRlCfg,
     MicroduckBackrollSplitRlCfg,
+    MicroduckSplitOverRlCfg,
 )
 from .backlash import make_backlash_variant
 
@@ -316,6 +317,13 @@ register_mjlab_task(
     env_cfg=make_microduck_backroll_env_cfg(style="split"),
     play_env_cfg=make_microduck_backroll_env_cfg(play=True, style="split"),
     rl_cfg=MicroduckBackrollSplitRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+register_mjlab_task(
+    task_id="Mjlab-HeadstandSplitOver-Flat-MicroDuck",
+    env_cfg=make_microduck_backroll_env_cfg(style="splitover"),
+    play_env_cfg=make_microduck_backroll_env_cfg(play=True, style="splitover"),
+    rl_cfg=MicroduckSplitOverRlCfg,
     runner_cls=MicroduckOnPolicyRunner,
 )
 register_mjlab_task(

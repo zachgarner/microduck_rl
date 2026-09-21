@@ -8167,3 +8167,69 @@ def headstand_arrival_damping(
     ang_vel = asset.data.root_link_ang_vel_w
     cost = torch.nan_to_num(torch.sum(torch.square(ang_vel[:, :2]), dim=1), nan=0.0)
     return cost * _smoothstep(_inverted_cos(asset), inverted_zero, inverted_full)
+
+
+# ── Split-over exit ──────────────────────────────────────────────────────────
+# Zach, Sep 21 2026: the exit from the split headstand is "continue the split
+# to exit"; the tuck-and-roll the split back roll learned "i never asked for
+# this. The point is splitting over." Same roulade rotation, but the legs
+# stay split and straight while the trunk goes over (180° → ~330°), so the
+# lead leg reaches the floor first and the other follows.
+
+
+def _legs_split_gate(
+    env: ManagerBasedRlEnv,
+    asset: Entity,
+    split_full: float = 1.0,
+    split_zero: float = 0.4,
+    knee_full: float = 0.3,
+    knee_zero: float = 0.6,
+) -> torch.Tensor:
+    """1 with both knees straight and the hips split (|left + right hip pitch|,
+    2.0 rad in the hold) at least split_full; 0 with the split closed past
+    split_zero or a knee bent past knee_zero. Smooth in between."""
+    q = _servo_joint_pos(env, asset)
+    worst_knee = torch.maximum(q[:, 3].abs(), q[:, 12].abs())
+    knees = _smoothstep(-worst_knee, -knee_zero, -knee_full)
+    split = (q[:, 2] + q[:, 11]).abs()
+    return knees * _smoothstep(split, split_zero, split_full)
+
+
+def _roulade_window(env: ManagerBasedRlEnv, angle_lo: float, angle_hi: float) -> torch.Tensor:
+    accum, _, _ = _roulade_state(env)
+    return ((accum > angle_lo) & (accum < angle_hi)).float()
+
+
+def roulade_progress_split(
+    env: ManagerBasedRlEnv,
+    target_angle: float = 2 * math.pi,
+    max_paid_rate: float = 5.0,
+    angle_lo: float = math.radians(170.0),
+    angle_hi: float = math.radians(330.0),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """roulade_progress, paid only as far as the legs are split and straight
+    while the trunk is going over (angle_lo..angle_hi of the accumulator).
+    Rotation with the legs tucked forfeits its pay (the frontier still moves,
+    so it cannot be re-earned later by un-tucking): the split-over is the
+    argmax, the tuck roll is unpaid. Outside the window (the rise to standing)
+    the legs are free."""
+    asset: Entity = env.scene[asset_cfg.name]
+    base = roulade_progress(env, target_angle, max_paid_rate, asset_cfg)
+    gate = _legs_split_gate(env, asset)
+    window = _roulade_window(env, angle_lo, angle_hi)
+    return base * (window * gate + (1.0 - window))
+
+
+def roulade_tuck_penalty(
+    env: ManagerBasedRlEnv,
+    angle_lo: float = math.radians(170.0),
+    angle_hi: float = math.radians(330.0),
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """How far the legs are from split-and-straight while the trunk is going
+    over. Positive; negative weight. The forfeited progress alone leaves the
+    tuck roll's landing pay intact, so the tuck must also cost per step."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _update_roulade_accum(env, asset)
+    return (1.0 - _legs_split_gate(env, asset)) * _roulade_window(env, angle_lo, angle_hi)

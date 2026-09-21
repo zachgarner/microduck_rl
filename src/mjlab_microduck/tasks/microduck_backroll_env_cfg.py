@@ -33,6 +33,10 @@ from mjlab.rl import RslRlOnPolicyRunnerCfg
 
 
 def make_microduck_backroll_env_cfg(play: bool = False, style: str = "straight") -> ManagerBasedRlEnvCfg:
+    """style: straight (legs together), split (the split hold, legs free during
+    the roll: it learned a tuck roll), splitover (the split hold, legs kept
+    split and straight while the trunk goes over; Zach, Sep 21 2026: "The
+    point is splitting over")."""
     cfg = make_microduck_roulade_env_cfg(play=play)
     overrides = HEADSTAND_STRAIGHT_OVERRIDES if style == "straight" else HEADSTAND_OVERRIDES
     # Same collision model as every other headstand policy (run 1 trained on the
@@ -69,6 +73,23 @@ def make_microduck_backroll_env_cfg(play: bool = False, style: str = "straight")
     # The exit is a controlled fall onto the back plus the rise: a 6 s episode
     # like the headstand's (the roulade's 5 s starts standing).
     cfg.episode_length_s = 6.0
+    if style == "splitover":
+        from mjlab.managers import RewardTermCfg
+        # Progress pays only while the legs are split and straight during the
+        # over-the-top window; the tuck costs per step in the same window
+        # (~2/step against the progress term's ~5.6/step, so a tuck roll
+        # nets less than a slow split-over). Same rate cap as the roll.
+        cfg.rewards["roulade_progress"] = RewardTermCfg(
+            func=microduck_mdp.roulade_progress_split,
+            weight=8.0,
+            params={"target_angle": 2 * math.pi, "max_paid_rate": 5.0,
+                    "angle_lo": math.radians(170.0), "angle_hi": math.radians(330.0)},
+        )
+        cfg.rewards["roulade_tuck"] = RewardTermCfg(
+            func=microduck_mdp.roulade_tuck_penalty,
+            weight=-2.0,
+            params={"angle_lo": math.radians(170.0), "angle_hi": math.radians(330.0)},
+        )
     return cfg
 
 
@@ -83,3 +104,4 @@ def _runner(name: str) -> RslRlOnPolicyRunnerCfg:
 
 MicroduckBackrollStraightRlCfg = _runner("microduck_headstand_backroll_straight")
 MicroduckBackrollSplitRlCfg = _runner("microduck_headstand_backroll_split")
+MicroduckSplitOverRlCfg = _runner("microduck_headstand_splitover")
