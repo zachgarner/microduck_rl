@@ -75,6 +75,9 @@ def make_microduck_backroll_env_cfg(play: bool = False, style: str = "straight")
     cfg.episode_length_s = 6.0
     if style == "splitover":
         from mjlab.managers import RewardTermCfg
+        # Half the spawns are the mirrored split: the routine switches once
+        # and exits from there (Zach, Sep 21: "just do one switch").
+        spawn["mirror_prob"] = 0.5
         # Progress pays only while the legs are split and straight during the
         # over-the-top window; the tuck costs per step in the same window
         # (~2/step against the progress term's ~5.6/step, so a tuck roll

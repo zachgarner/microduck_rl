@@ -7003,8 +7003,12 @@ def reset_roulade_state(
     tuck_overrides: Optional[dict] = None,
     tuck_factor_range: tuple = (0.3, 1.0),
     joint_noise_std: float = 0.0,
+    mirror_prob: float = 0.0,
 ):
     """Reset to a standing start or a mid-roll state (reverse curriculum).
+
+    mirror_prob: share of mid-roll spawns with tuck_overrides left/right
+    mirrored (the split hold after one switch; split-over exit, Sep 21 2026).
 
     Standing bucket: upright (±standing_tilt_max pitch/roll noise), random yaw,
     HOME joints (left from reset_robot_joints), z in [standing_z_min, _max].
@@ -7072,10 +7076,13 @@ def reset_roulade_state(
             * (tuck_factor_range[1] - tuck_factor_range[0])
             + tuck_factor_range[0]
         )
+        mirrored_ov = _mirror_overrides(tuck_overrides) if mirror_prob > 0.0 else tuck_overrides
+        is_mirror = torch.rand(len(mid_env_ids), device=env.device) < mirror_prob
         for jnt_idx, angle in tuck_overrides.items():
             col = 7 + servo_ids[jnt_idx]
             home = env.sim.data.qpos[mid_env_ids, col]
-            env.sim.data.qpos[mid_env_ids, col] = home + u * (angle - home)
+            target = torch.where(is_mirror, torch.full_like(home, float(mirrored_ov[jnt_idx])), torch.full_like(home, float(angle)))
+            env.sim.data.qpos[mid_env_ids, col] = home + u * (target - home)
     if len(mid_env_ids) > 0 and joint_noise_std > 0.0:
         cols = torch.tensor([7 + j for j in servo_ids], device=env.device, dtype=torch.long)
         noise = torch.randn(len(mid_env_ids), len(cols), device=env.device) * joint_noise_std
